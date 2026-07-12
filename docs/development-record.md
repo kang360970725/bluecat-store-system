@@ -519,6 +519,20 @@ blueCat-StoreSystem/
 - 生产部署方式已确认优先使用 Git 仓库拉取代码；当前本地目录尚未初始化 Git 仓库，也没有远程仓库地址
 - SSH 登录方式已确认使用腾讯云密钥登录，不建议开启 SSH 密码登录；下一步需要确认本机私钥 `.pem` 文件路径和服务器登录用户名
 - `.gitignore` 已补充 `!.env.production.example`，确保生产环境模板可以进入 Git，真实 `.env` 仍保持忽略
+- 服务器 SSH 私钥路径已确认：`/Users/allen/Downloads/bluecat_store.pem`
+- 服务器 SSH 登录用户已验证：`ubuntu`，`root` 用户密钥登录失败，后续使用 `ubuntu@49.235.145.204`
+- GitHub 远程仓库地址已设置：`https://github.com/kang360970725/bluecat-store-system.git`
+- 当前本地仓库已完成首个提交：`79fbcc2 Initial BlueCat store system`
+- 本机推送 GitHub 暂未成功，`git push` 返回 `Empty reply from server`，首次部署已临时改用 `git archive` 打包并通过 `scp` 上传服务器
+- 服务器应用目录已创建：`/opt/bluecat-store-system`
+- 首次服务器环境初始化已完成：Node.js `v22.23.1`、Nginx、MySQL、Redis、PM2 已安装并启用
+- 生产 `.env` 已写入服务器 `/opt/bluecat-store-system/.env`，文件权限已设置为 `600`
+- 生产数据库已创建：`store_system_db`；应用数据库账号已创建：`bluecat_app@127.0.0.1`
+- 服务器首次执行 `pnpm deploy:prod` 成功：依赖安装、Prisma Client 生成、8 条生产迁移、前后端构建、PM2 启动均已完成
+- 生产种子数据已执行成功，默认账号已写入：`admin / admin123`、`manager / manager123`
+- Nginx 已启用 `deploy/nginx.bluecat-store-system.conf`，公网 `http://49.235.145.204/` 已返回 `200 OK`
+- 生产登录接口 `POST http://49.235.145.204/api/auth/login` 已验证成功
+- PM2 进程 `bluecat-store-server` 已在线，PM2 systemd 开机自启已配置
 - 已修复评分长文本字段长度隐患：`score_items.description`、`score_items.formula_note`、`store_score_entries.remark` 已调整为 `TEXT`
 - 评分长文本字段 Prisma migration 已生成并应用：`prisma/migrations/20260711114123_widen_scoring_text_fields/migration.sql`
 - 本轮已验证评分列表底层 Prisma 查询：本地库返回 `24` 个计分项目、`2` 个门店，关联评分明细查询正常
@@ -529,6 +543,11 @@ blueCat-StoreSystem/
 - 本轮已验证：`pnpm --filter @bluecat/web lint`
 - 本轮已验证：`pnpm --filter @bluecat/web build`
 - 本轮已验证：`bash -n scripts/deploy-prod.sh scripts/bootstrap-ubuntu.sh`
+- 服务器已验证：`pm2 status`
+- 服务器已验证：`curl -I http://127.0.0.1:3001/api/docs`
+- 服务器已验证：`systemctl is-active nginx mysql redis-server`
+- 公网已验证：`curl -I http://49.235.145.204/`
+- 公网已验证：`POST http://49.235.145.204/api/auth/login`
 - 本轮已验证：`pnpm build`
 
 当前未完成：
