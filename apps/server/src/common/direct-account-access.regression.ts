@@ -30,7 +30,10 @@ let legacyEnabled = true;
 let wechatBindingExists = true;
 const db = {
   v2AttendanceWechatBinding: { findFirst: async () => wechatBindingExists ? { accountId: 'account' } : null },
-  v2Account: { findFirst: async () => v2AccountExists ? account : null },
+  v2Account: {
+    findFirst: async () => v2AccountExists ? account : null,
+    findUnique: async () => v2AccountExists ? account : null
+  },
   user: { findFirst: async () => legacyEnabled ? { id: 'legacy' } : null }
 } as unknown as PrismaService;
 
@@ -88,7 +91,12 @@ async function run() {
   assert.deepEqual((await strategy.validate(oldToken)).roles, oldToken.roles);
   v2AccountExists = false;
   assert.deepEqual((await strategy.validate(oldToken)).roles, oldToken.roles);
+  assert.deepEqual(await resolveScopedPermission('account', permission, db), {
+    employeeId: null,
+    storeIds: null
+  });
   legacyEnabled = false;
+  assert.equal(await resolveScopedPermission('account', permission, db), null);
   await assert.rejects(strategy.validate(oldToken), /停用/);
   const terminalAdminDb = {
     v2Account: { findUnique: async () => null },

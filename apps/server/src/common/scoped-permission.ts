@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { readDirectAccountAccess } from './direct-account-access';
+import { isLiveSuperAdmin } from './live-super-admin';
 
 const activeAccount = { status: 'ACTIVE', deletedAt: null } as const;
 
@@ -16,6 +17,9 @@ export async function resolveScopedPermission(
       return null;
     if (direct.storeIds?.length === 0) return null;
     return { employeeId: direct.employeeId, storeIds: direct.storeIds };
+  }
+  if (!direct && (await isLiveSuperAdmin(db, accountId))) {
+    return { employeeId: null, storeIds: null };
   }
   const grants: Prisma.V2RoleWhereInput = {
     code: { not: 'super_admin' },

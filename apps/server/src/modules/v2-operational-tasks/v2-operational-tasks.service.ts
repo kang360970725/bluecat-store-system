@@ -15,6 +15,7 @@ import {
   type V2OperationalTaskStatus
 } from '@prisma/client';
 import { resolveScopedPermission } from '../../common/scoped-permission';
+import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import {
   emptyTaskCounts,
   taskStatusLabel,
@@ -1570,7 +1571,16 @@ export class V2OperationalTasksService
         }
       }
     });
-    if (!account) throw new ForbiddenException('账号不可使用运营任务');
+    if (!account) {
+      if (await isLiveSuperAdmin(db, accountId)) {
+        return {
+          employeeId: null,
+          employeeName: undefined,
+          superAdmin: true
+        };
+      }
+      throw new ForbiddenException('账号不可使用运营任务');
+    }
     return {
       employeeId: account.employeeId,
       employeeName: account.employee?.name,
