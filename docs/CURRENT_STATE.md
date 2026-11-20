@@ -13,15 +13,15 @@ Last updated: 2026-11-20
 ## Implemented areas
 
 - The production source baseline through the 2026-11-19 workforce-scheduling release has been recovered into Git, including the three previously production-only migrations for account-role assignment, encrypted attendance settings and schedule planning fields.
-- Wi-Fi BSSID attendance replaces the QR-terminal pilot in the current release candidate. Store-scoped schedule maintainers configure multiple BSSIDs in the store workspace; the independent Taro mini-program reads the connected Wi-Fi and submits it for server-side employee, store, published/locked normal-or-overtime schedule and time-window validation. Missing or unmatched Wi-Fi uses only the existing correction workflow.
+- Wi-Fi BSSID attendance replaced the QR-terminal pilot in production on 2026-11-20. Store-scoped schedule maintainers configure multiple BSSIDs in the store workspace; the independent Taro mini-program reads the connected Wi-Fi and submits it for server-side employee, store, published/locked normal-or-overtime schedule and time-window validation. Missing or unmatched Wi-Fi uses only the existing correction workflow.
 
 - A store-scoped workforce-scheduling update is in development on `feature/store-workforce-scheduling-v2`: the store workspace lists monthly schedule periods; the editor provides week/month matrices, explicit rest days, store-specific shift settings, the staggered `白白夜夜休休` three-person rotation, prior-month copying, effective-dated work succession and overtime positions. Its migration adds rest/overtime planning fields, succession mappings and scheduling permissions to the default store-manager role. Frozen install, Prisma generation, lint, typecheck, build and V2 regression pass. A verified production backup restored into an isolated MySQL database and the migration passed after assigning explicit MySQL-safe index names and registering the previously absent `schedule:view` permission; production deployment remains pending.
 
-- The employee mini program has a public landing experience and an opt-in WeChat session for previously bound employees. Server deployment and device verification are pending.
+- The employee mini program has a public landing experience and an opt-in WeChat session for previously bound employees. Its server contracts are deployed and the independent Taro project compiles successfully; real-device Wi-Fi/BSSID acceptance remains pending.
 
-- Store managers can view the all-store ranking in Store Center. The top summary and store workspace access are scoped to their authorized stores. The summary adjustment is pending production deployment.
+- Store managers can view the all-store ranking in Store Center. The top summary and store workspace access are scoped to their authorized stores. This scope adjustment is deployed.
 
-- The employee store-scope fix restricts historical all-store values on linked employee accounts to current employment and managed stores. The pilot settings form adds encrypted WeChat credentials, generated terminal signing keys and explicit clock windows. Migration and production deployment are pending.
+- The employee store-scope fix restricts historical all-store values on linked employee accounts to current employment and managed stores. The attendance settings form keeps encrypted WeChat credentials and explicit clock windows, while per-store BSSIDs are maintained in the store workspace. These changes are deployed.
 
 - V2 store, operations, employee, organization, role/permission, payroll, and cost-management foundations.
 - Employee import template and import processing.
@@ -32,6 +32,8 @@ Last updated: 2026-11-20
 - Production build and upload scripts plus Prisma migrations.
 
 ## In progress: employee mini-program attendance
+
+- Production deployment completed on 2026-11-20 from commit `c84bc6be`. Migration `20261120190000_add_attendance_wifi_networks` is applied and all 67 migrations are current. The verified pre-deploy application/database backup and checksum manifest are stored at `/opt/bluecat-store-system/.release-backups/wifi-attendance-before-c84bc6be`. Post-deploy checks found HTTPS 200, PM2 online, the protected Wi-Fi configuration route registered, invalid Wi-Fi punch input rejected, the retired QR code route absent, and no startup error. Rollback is restoration of the paired application and database backup followed by PM2 reload.
 
 - QR terminal provisioning, display and scan routes are retired. Existing terminal IDs remain only as historical punch provenance.
 - The Web system keeps the encrypted AppID/AppSecret and clock-window settings page. Per-store BSSID configuration is in the store workspace and is restricted by `schedule:update` scope.
