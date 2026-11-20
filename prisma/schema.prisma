@@ -42,10 +42,205 @@ enum PerformanceSplitStatus {
   ACTIVE
 }
 
+enum PerformanceTargetMode {
+  MANUAL
+  ABSOLUTE_PROFIT
+  HISTORICAL_GROWTH
+}
+
 enum ScheduleRole {
   CASHIER
   FLOOR
   FLEX
+}
+
+enum ExternalMappingStatus {
+  AUTO_MATCHED
+  MANUAL_MATCHED
+  UNMATCHED
+}
+
+enum V2IngestStatus {
+  RECEIVED
+  COMPLETED
+  FAILED
+}
+
+enum V2EventType {
+  RECHARGE_PRINCIPAL
+  RECHARGE_DIRECT_REWARD
+  MARKETING_CREDIT
+  PRODUCT_SALE
+  PRODUCT_REFUND
+  OTA_REDEEM
+  OTA_REVERSE
+  NET_FEE_SETTLEMENT
+  LEASE_INCOME
+  OTHER_INCOME
+}
+
+enum V2Decision {
+  INCLUDED
+  EXCLUDED
+}
+
+enum V2LinkType {
+  DUPLICATE_OF
+  REPRESENTS_SAME_BUSINESS
+  REVERSAL_OF
+}
+
+enum V2ReconciliationStatus {
+  DRAFT
+  PASSED
+  NEEDS_REVIEW
+}
+
+enum V2OrgType {
+  HEADQUARTERS
+  REGION
+  COMPANY
+}
+
+enum V2StoreStatus {
+  PREPARING
+  OPERATING
+  SUSPENDED
+  CLOSED
+}
+
+enum V2ExternalStoreCandidateStatus {
+  PENDING
+  MATCHED
+  IGNORED
+}
+
+enum V2PositionSource {
+  SYSTEM_TEMPLATE
+  STORE_CUSTOM
+}
+
+enum V2EmployeeStatus {
+  PENDING
+  ACTIVE
+  LEAVE
+  TERMINATED
+}
+
+enum V2EmploymentChangeType {
+  HIRED
+  TRANSFERRED
+  POSITION_CHANGED
+  STATUS_CHANGED
+  TERMINATED
+}
+
+enum V2LeaveType {
+  ANNUAL
+  SICK
+  PERSONAL
+  COMPENSATORY
+  OTHER
+}
+
+enum V2LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum V2CostCalculationMethod {
+  FIXED
+  RATE
+  FORMULA
+  MANUAL
+}
+
+enum V2CostFrequency {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+  ONE_TIME
+}
+
+enum V2InvestmentType {
+  INITIAL
+  ADDITIONAL
+  RENOVATION
+  EQUIPMENT
+  OTHER
+}
+
+enum V2AssetStatus {
+  ACTIVE
+  REPAIRING
+  RETIRED
+  DISPOSED
+}
+
+enum V2AccountStatus {
+  ACTIVE
+  LOCKED
+  DISABLED
+}
+
+enum V2DataScopeType {
+  ALL_STORES
+  ASSIGNED_STORES
+  EMPLOYEE_STORE
+}
+
+enum V2PayrollBatchStatus {
+  DRAFT
+  CALCULATED
+  PENDING_REVIEW
+  REVIEWED
+  APPROVED
+  LOCKED
+  PAID
+  CANCELLED
+}
+
+enum V2PayrollAdjustmentDirection {
+  EARNING
+  DEDUCTION
+}
+
+enum V2PayrollAdjustmentStatus {
+  DRAFT
+  APPROVED
+  REJECTED
+}
+
+enum V2PlanStatus {
+  DRAFT
+  PUBLISHED
+  LOCKED
+}
+
+enum V2ScoreStatus {
+  DRAFT
+  CONFIRMED
+}
+
+enum V2SourceSessionStatus {
+  UNCONFIGURED
+  VALID
+  EXPIRED
+  ERROR
+}
+
+enum V2SyncJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum V2RevenueSnapshotKind {
+  SETTLED_DAILY
+  LIVE_TODAY
 }
 
 model Org {
@@ -66,35 +261,36 @@ model Org {
 }
 
 model Store {
-  id                    String                                @id @default(cuid())
-  orgId                 String                                @map("org_id")
-  org                   Org                                   @relation(fields: [orgId], references: [id])
-  name                  String
-  code                  String                                @unique
-  status                StoreStatus                           @default(ENABLED)
-  machineCount          Int                                   @default(0) @map("machine_count")
-  address               String?
-  longitude             Decimal?                              @db.Decimal(10, 6)
-  latitude              Decimal?                              @db.Decimal(10, 6)
-  phone                 String?
-  managerEmployeeId     String?                               @map("manager_employee_id")
-  managerEmployee       Employee?                             @relation("StoreManager", fields: [managerEmployeeId], references: [id])
-  responsibleEmployeeId String?                               @map("responsible_employee_id")
-  responsibleEmployee   Employee?                             @relation("StoreResponsible", fields: [responsibleEmployeeId], references: [id])
-  employees             Employee[]                            @relation("StoreEmployees")
-  areas                 StoreArea[]
-  performanceTargets    StorePerformanceTarget[]
-  performanceActuals    StorePerformanceActualSnapshot[]
-  performanceEstimates  StorePerformanceEstimateSnapshot[]
-  splitPlans            StorePerformanceSplitPlan[]
-  shiftActuals          StorePerformanceShiftActualSnapshot[]
-  schedules             EmployeeSchedule[]
-  scoreEntries          StoreScoreEntry[]
-  createdAt             DateTime                              @default(now()) @map("created_at")
-  updatedAt             DateTime                              @updatedAt @map("updated_at")
-  createdBy             String?                               @map("created_by")
-  updatedBy             String?                               @map("updated_by")
-  deletedAt             DateTime?                             @map("deleted_at")
+  id                     String                                @id @default(cuid())
+  orgId                  String                                @map("org_id")
+  org                    Org                                   @relation(fields: [orgId], references: [id])
+  name                   String
+  code                   String                                @unique
+  status                 StoreStatus                           @default(ENABLED)
+  machineCount           Int                                   @default(0) @map("machine_count")
+  address                String?
+  longitude              Decimal?                              @db.Decimal(10, 6)
+  latitude               Decimal?                              @db.Decimal(10, 6)
+  phone                  String?
+  managerEmployeeId      String?                               @map("manager_employee_id")
+  managerEmployee        Employee?                             @relation("StoreManager", fields: [managerEmployeeId], references: [id])
+  responsibleEmployeeId  String?                               @map("responsible_employee_id")
+  responsibleEmployee    Employee?                             @relation("StoreResponsible", fields: [responsibleEmployeeId], references: [id])
+  employees              Employee[]                            @relation("StoreEmployees")
+  areas                  StoreArea[]
+  performanceTargets     StorePerformanceTarget[]
+  performanceActuals     StorePerformanceActualSnapshot[]
+  performanceEstimates   StorePerformanceEstimateSnapshot[]
+  splitPlans             StorePerformanceSplitPlan[]
+  shiftActuals           StorePerformanceShiftActualSnapshot[]
+  legacyExternalMappings StoreExternalMapping[]
+  schedules              EmployeeSchedule[]
+  scoreEntries           StoreScoreEntry[]
+  createdAt              DateTime                              @default(now()) @map("created_at")
+  updatedAt              DateTime                              @updatedAt @map("updated_at")
+  createdBy              String?                               @map("created_by")
+  updatedBy              String?                               @map("updated_by")
+  deletedAt              DateTime?                             @map("deleted_at")
 
   @@index([orgId])
   @@index([managerEmployeeId])
@@ -214,6 +410,15 @@ model StorePerformanceTarget {
   targetRevenue         Decimal                    @default(0) @map("target_revenue") @db.Decimal(12, 2)
   netFeeTarget          Decimal                    @default(0) @map("net_fee_target") @db.Decimal(12, 2)
   productTarget         Decimal                    @default(0) @map("product_target") @db.Decimal(12, 2)
+  drinkTarget           Decimal                    @default(0) @map("drink_target") @db.Decimal(12, 2)
+  mealTarget            Decimal                    @default(0) @map("meal_target") @db.Decimal(12, 2)
+  otherTarget           Decimal                    @default(0) @map("other_target") @db.Decimal(12, 2)
+  targetMode            PerformanceTargetMode      @default(MANUAL) @map("target_mode")
+  targetProfit          Decimal                    @default(0) @map("target_profit") @db.Decimal(12, 2)
+  profitGrowthRate      Decimal?                   @map("profit_growth_rate") @db.Decimal(7, 4)
+  totalCostBudget       Decimal                    @default(0) @map("total_cost_budget") @db.Decimal(12, 2)
+  expectedVisits        Int                        @default(0) @map("expected_visits")
+  managementFeeRate     Decimal                    @default(0.09) @map("management_fee_rate") @db.Decimal(7, 4)
   splitStatus           PerformanceSplitStatus     @default(PENDING) @map("split_status")
   splitPlan             StorePerformanceSplitPlan?
   managementFee         Decimal                    @default(0) @map("management_fee") @db.Decimal(12, 2)
@@ -289,6 +494,8 @@ model StorePerformanceSplitPlan {
   netFeeTarget        Decimal                     @default(0) @map("net_fee_target") @db.Decimal(12, 2)
   productTarget       Decimal                     @default(0) @map("product_target") @db.Decimal(12, 2)
   weekendIncreaseRate Decimal                     @default(0.15) @map("weekend_increase_rate") @db.Decimal(5, 4)
+  shiftMode           Int                         @default(2) @map("shift_mode")
+  lastRebalancedAt    DateTime?                   @map("last_rebalanced_at")
   status              PerformanceSplitStatus      @default(ACTIVE)
   items               StorePerformanceSplitItem[]
   createdAt           DateTime                    @default(now()) @map("created_at")
@@ -303,18 +510,20 @@ model StorePerformanceSplitPlan {
 }
 
 model StorePerformanceSplitItem {
-  id            String                                @id @default(cuid())
-  planId        String                                @map("plan_id")
-  plan          StorePerformanceSplitPlan             @relation(fields: [planId], references: [id])
-  shiftId       String                                @map("shift_id")
-  shift         WorkShift                             @relation(fields: [shiftId], references: [id])
-  workDate      DateTime                              @map("work_date") @db.Date
-  netFeeTarget  Decimal                               @default(0) @map("net_fee_target") @db.Decimal(12, 2)
-  productTarget Decimal                               @default(0) @map("product_target") @db.Decimal(12, 2)
-  actuals       StorePerformanceShiftActualSnapshot[]
-  createdAt     DateTime                              @default(now()) @map("created_at")
-  updatedAt     DateTime                              @updatedAt @map("updated_at")
-  deletedAt     DateTime?                             @map("deleted_at")
+  id               String                                @id @default(cuid())
+  planId           String                                @map("plan_id")
+  plan             StorePerformanceSplitPlan             @relation(fields: [planId], references: [id])
+  shiftId          String                                @map("shift_id")
+  shift            WorkShift                             @relation(fields: [shiftId], references: [id])
+  workDate         DateTime                              @map("work_date") @db.Date
+  netFeeTarget     Decimal                               @default(0) @map("net_fee_target") @db.Decimal(12, 2)
+  productTarget    Decimal                               @default(0) @map("product_target") @db.Decimal(12, 2)
+  allocationWeight Decimal                               @default(1) @map("allocation_weight") @db.Decimal(7, 3)
+  lockedAt         DateTime?                             @map("locked_at")
+  actuals          StorePerformanceShiftActualSnapshot[]
+  createdAt        DateTime                              @default(now()) @map("created_at")
+  updatedAt        DateTime                              @updatedAt @map("updated_at")
+  deletedAt        DateTime?                             @map("deleted_at")
 
   @@unique([planId, shiftId, workDate])
   @@index([workDate])
@@ -346,16 +555,17 @@ model StorePerformanceShiftActualSnapshot {
 }
 
 model StorePerformanceActualSnapshot {
-  id        String    @id @default(cuid())
-  storeId   String    @map("store_id")
-  store     Store     @relation(fields: [storeId], references: [id])
-  month     DateTime  @db.Date
-  amount    Decimal   @default(0) @db.Decimal(12, 2)
-  source    String    @default("third_party") @map("source")
-  syncedAt  DateTime? @map("synced_at")
-  createdAt DateTime  @default(now()) @map("created_at")
-  updatedAt DateTime  @updatedAt @map("updated_at")
-  deletedAt DateTime? @map("deleted_at")
+  id              String    @id @default(cuid())
+  storeId         String    @map("store_id")
+  store           Store     @relation(fields: [storeId], references: [id])
+  month           DateTime  @db.Date
+  amount          Decimal   @default(0) @db.Decimal(12, 2)
+  source          String    @default("third_party") @map("source")
+  dataThroughDate DateTime? @map("data_through_date") @db.Date
+  syncedAt        DateTime? @map("synced_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
 
   @@unique([storeId, month, source])
   @@index([month])
@@ -377,6 +587,1558 @@ model StorePerformanceEstimateSnapshot {
   @@unique([storeId, month, source])
   @@index([month])
   @@map("store_performance_estimate_snapshots")
+}
+
+/// Historical read-only archive. New code must use V2DataSourceConnection.
+model StoreExternalMapping {
+  id               String                @id @default(cuid())
+  provider         String                @default("54laoban")
+  externalStoreId  String                @map("external_store_id")
+  externalBranchId String?               @map("external_branch_id")
+  externalName     String?               @map("external_name")
+  storeId          String?               @map("store_id")
+  store            Store?                @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  matchStatus      ExternalMappingStatus @default(UNMATCHED) @map("match_status")
+  lastSeenAt       DateTime?             @map("last_seen_at")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  deletedAt        DateTime?             @map("deleted_at")
+
+  @@unique([provider, externalStoreId])
+  @@index([storeId])
+  @@map("legacy_store_external_mappings_archive")
+}
+
+model PerformanceSyncLog {
+  id          String    @id @default(cuid())
+  provider    String    @default("54laoban")
+  syncType    String    @map("sync_type")
+  status      String
+  paramsJson  Json?     @map("params_json")
+  resultJson  Json?     @map("result_json")
+  errorReason String?   @map("error_reason") @db.Text
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([provider, syncType, startedAt])
+  @@map("performance_sync_logs")
+}
+
+model V2IngestBatch {
+  id              String         @id @default(cuid())
+  sourceSystem    String         @map("source_system")
+  endpoint        String
+  externalStoreId String         @map("external_store_id")
+  requestParams   Json           @map("request_params")
+  responseBody    Json           @map("response_body")
+  businessStartAt DateTime       @map("business_start_at")
+  businessEndAt   DateTime       @map("business_end_at")
+  fetchedAt       DateTime       @map("fetched_at")
+  status          V2IngestStatus @default(RECEIVED)
+  pageCount       Int?           @map("page_count")
+  recordCount     Int            @default(0) @map("record_count")
+  contentHash     String         @map("content_hash") @db.VarChar(64)
+  rawRecords      V2RawRecord[]
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  @@unique([sourceSystem, endpoint, externalStoreId, contentHash])
+  @@index([externalStoreId, businessStartAt, businessEndAt])
+  @@map("v2_ingest_batches")
+}
+
+model V2Organization {
+  id          String                     @id @default(cuid())
+  parentId    String?                    @map("parent_id")
+  parent      V2Organization?            @relation("V2OrganizationTree", fields: [parentId], references: [id])
+  children    V2Organization[]           @relation("V2OrganizationTree")
+  type        V2OrgType
+  name        String
+  code        String                     @unique
+  enabled     Boolean                    @default(true)
+  stores      V2Store[]
+  positions   V2OrganizationPosition[]
+  employments V2OrganizationEmployment[]
+  createdAt   DateTime                   @default(now()) @map("created_at")
+  updatedAt   DateTime                   @updatedAt @map("updated_at")
+  createdBy   String?                    @map("created_by")
+  updatedBy   String?                    @map("updated_by")
+  deletedAt   DateTime?                  @map("deleted_at")
+
+  @@index([parentId])
+  @@map("v2_organizations")
+}
+
+model V2OrganizationPosition {
+  id             String                     @id @default(cuid())
+  organizationId String                     @map("organization_id")
+  organization   V2Organization             @relation(fields: [organizationId], references: [id])
+  name           String
+  code           String
+  description    String?                    @db.Text
+  sort           Int                        @default(0)
+  enabled        Boolean                    @default(true)
+  requiresPGrade Boolean                    @default(false) @map("requires_p_grade")
+  roleId         String?                    @map("role_id")
+  role           V2Role?                    @relation("V2OrganizationPositionRole", fields: [roleId], references: [id], onDelete: SetNull)
+  employments    V2OrganizationEmployment[]
+  createdAt      DateTime                   @default(now()) @map("created_at")
+  updatedAt      DateTime                   @updatedAt @map("updated_at")
+  createdBy      String?                    @map("created_by")
+  updatedBy      String?                    @map("updated_by")
+  deletedAt      DateTime?                  @map("deleted_at")
+
+  @@unique([organizationId, code])
+  @@index([roleId])
+  @@map("v2_organization_positions")
+}
+
+model V2OrganizationEmployment {
+  id               String                 @id @default(cuid())
+  employeeId       String                 @map("employee_id")
+  employee         V2Employee             @relation(fields: [employeeId], references: [id])
+  organizationId   String                 @map("organization_id")
+  organization     V2Organization         @relation(fields: [organizationId], references: [id])
+  positionId       String                 @map("position_id")
+  position         V2OrganizationPosition @relation(fields: [positionId], references: [id])
+  costStoreId      String?                @map("cost_store_id")
+  costStore        V2Store?               @relation("V2OrganizationEmploymentCostStore", fields: [costStoreId], references: [id])
+  grade            String?                @db.VarChar(12)
+  compensationType String                 @default("MONTHLY") @map("compensation_type") @db.VarChar(12)
+  startedOn        DateTime               @map("started_on") @db.Date
+  endedOn          DateTime?              @map("ended_on") @db.Date
+  isPrimary        Boolean                @default(true) @map("is_primary")
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  createdBy        String?                @map("created_by")
+  updatedBy        String?                @map("updated_by")
+  deletedAt        DateTime?              @map("deleted_at")
+
+  @@index([employeeId, startedOn, endedOn])
+  @@index([organizationId, positionId, endedOn])
+  @@index([costStoreId, endedOn])
+  @@map("v2_organization_employments")
+}
+
+model V2Store {
+  operationalTaskSchedules  V2OperationalTaskSchedule[]
+  operationalTasks          V2OperationalTask[]
+  attendanceTerminals       V2AttendanceTerminal[]
+  attendanceWifiNetworks    V2AttendanceWifiNetwork[]
+  id                        String                       @id @default(cuid())
+  organizationId            String                       @map("organization_id")
+  organization              V2Organization               @relation(fields: [organizationId], references: [id])
+  name                      String
+  shortName                 String?                      @map("short_name")
+  code                      String                       @unique
+  status                    V2StoreStatus                @default(PREPARING)
+  openedOn                  DateTime?                    @map("opened_on") @db.Date
+  closedOn                  DateTime?                    @map("closed_on") @db.Date
+  businessDayStartsAt       String                       @default("09:00") @map("business_day_starts_at") @db.VarChar(5)
+  address                   String?
+  phone                     String?
+  machineCount              Int                          @default(0) @map("machine_count")
+  positions                 V2StorePosition[]
+  employments               V2Employment[]
+  organizationEmployments   V2OrganizationEmployment[]   @relation("V2OrganizationEmploymentCostStore")
+  operatingProfile          V2StoreOperatingProfile?
+  costConfigs               V2StoreCostConfig[]
+  costCorrections           V2StoreCostCorrection[]
+  investments               V2StoreInvestment[]
+  assets                    V2StoreAsset[]
+  areas                     V2StoreArea[]
+  accountScopes             V2AccountStoreScope[]
+  shifts                    V2StoreShift[]
+  schedulePeriods           V2SchedulePeriod[]
+  operatingTargets          V2OperatingTarget[]
+  employeeScores            V2EmployeeScore[]
+  dataSource                V2DataSourceConnection?
+  employeeLeaves            V2EmployeeLeave[]
+  revenueSnapshots          V2RevenueSnapshot[]
+  otaDailySnapshots         V2OtaDailySnapshot[]
+  otaProducts               V2OtaProduct[]
+  otaRedemptions            V2OtaRedemption[]
+  shiftRevenueSnapshots     V2ShiftRevenueSnapshot[]
+  productDisplayCategories  V2ProductDisplayCategory[]
+  productExclusionSnapshots V2ProductExclusionSnapshot[]
+  operationsReports         V2OperationsReport[]
+  rechargeContestEntries    V2RechargeContestEntry[]
+  payrollStoreProfits       V2PayrollStoreProfit[]
+  createdAt                 DateTime                     @default(now()) @map("created_at")
+  updatedAt                 DateTime                     @updatedAt @map("updated_at")
+  createdBy                 String?                      @map("created_by")
+  updatedBy                 String?                      @map("updated_by")
+  deletedAt                 DateTime?                    @map("deleted_at")
+
+  @@index([organizationId, status])
+  @@map("v2_stores")
+}
+
+model V2OperationsReport {
+  id            String   @id @default(cuid())
+  storeId       String   @map("store_id")
+  store         V2Store  @relation(fields: [storeId], references: [id])
+  reportType    String   @map("report_type") @db.VarChar(16)
+  periodKey     String   @map("period_key") @db.VarChar(16)
+  periodStart   DateTime @map("period_start") @db.Date
+  periodEnd     DateTime @map("period_end") @db.Date
+  status        String   @default("PARTIAL") @db.VarChar(16)
+  payload       Json
+  sourceSummary Json?    @map("source_summary")
+  errorReason   String?  @map("error_reason") @db.Text
+  attemptCount  Int      @default(1) @map("attempt_count")
+  generatedAt   DateTime @default(now()) @map("generated_at")
+  generatedBy   String?  @map("generated_by") @db.VarChar(191)
+  resynced      Boolean  @default(false)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([storeId, reportType, periodKey], map: "v2_operations_report_period_key")
+  @@index([reportType, periodStart, status])
+  @@map("v2_operations_reports")
+}
+
+model V2RechargeContest {
+  id               String                     @id @default(cuid())
+  code             String                     @unique @db.VarChar(64)
+  name             String
+  startsAt         DateTime                   @map("starts_at")
+  endsAt           DateTime                   @map("ends_at")
+  rules            Json
+  status           String                     @default("ACTIVE") @db.VarChar(24)
+  lastSyncedAt     DateTime?                  @map("last_synced_at")
+  lastFullSyncedAt DateTime?                  @map("last_full_synced_at")
+  lastSyncError    String?                    @map("last_sync_error") @db.Text
+  entries          V2RechargeContestEntry[]
+  syncRuns         V2RechargeContestSyncRun[]
+  pushRuns         V2RechargeContestPushRun[]
+  createdAt        DateTime                   @default(now()) @map("created_at")
+  updatedAt        DateTime                   @updatedAt @map("updated_at")
+
+  @@index([status, startsAt, endsAt])
+  @@map("v2_recharge_contests")
+}
+
+model V2RechargeContestEntry {
+  id                 String            @id @default(cuid())
+  contestId          String            @map("contest_id")
+  contest            V2RechargeContest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  storeId            String            @map("store_id")
+  store              V2Store           @relation(fields: [storeId], references: [id])
+  externalStoreId    String            @map("external_store_id") @db.VarChar(64)
+  sourceKey          String            @map("source_key") @db.VarChar(128)
+  sourceRecordId     String?           @map("source_record_id") @db.VarChar(128)
+  transactionNo      String?           @map("transaction_no") @db.VarChar(128)
+  occurredAt         DateTime          @map("occurred_at")
+  category           String            @db.VarChar(64)
+  cardRef            String?           @map("card_ref") @db.VarChar(128)
+  principal          Decimal           @db.Decimal(14, 2)
+  reward             Decimal           @default(0) @db.Decimal(14, 2)
+  score              Int
+  paymentSource      String?           @map("payment_source") @db.VarChar(128)
+  paymentMethod      String?           @map("payment_method") @db.VarChar(128)
+  operatorLabel      String?           @map("operator_label") @db.VarChar(128)
+  salespersonName    String?           @map("salesperson_name") @db.VarChar(128)
+  salespersonBoundAt DateTime?         @map("salesperson_bound_at")
+  salespersonBoundBy String?           @map("salesperson_bound_by") @db.VarChar(191)
+  note               String?           @db.Text
+  changeDetails      String?           @map("change_details") @db.Text
+  sourcePayload      Json              @map("source_payload")
+  sourceHash         String            @map("source_hash") @db.VarChar(64)
+  capturedAt         DateTime          @map("captured_at")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+
+  @@unique([contestId, sourceKey], map: "v2_recharge_contest_entry_source_key")
+  @@index([contestId, storeId, occurredAt])
+  @@index([externalStoreId, occurredAt])
+  @@map("v2_recharge_contest_entries")
+}
+
+model V2RechargeContestPushRun {
+  id          String            @id @default(cuid())
+  contestId   String            @map("contest_id")
+  contest     V2RechargeContest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  configId    String            @map("config_id")
+  pushKey     String            @map("push_key") @db.VarChar(32)
+  status      String            @default("PROCESSING") @db.VarChar(24)
+  imageBytes  Int?              @map("image_bytes")
+  errorReason String?           @map("error_reason") @db.Text
+  createdAt   DateTime          @default(now()) @map("created_at")
+  sentAt      DateTime?         @map("sent_at")
+
+  @@unique([contestId, configId, pushKey], map: "v2_recharge_contest_push_key")
+  @@index([contestId, createdAt])
+  @@map("v2_recharge_contest_push_runs")
+}
+
+model V2RechargeContestSyncRun {
+  id          String            @id @default(cuid())
+  contestId   String            @map("contest_id")
+  contest     V2RechargeContest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+  bucketAt    DateTime          @map("bucket_at")
+  rangeStart  DateTime          @map("range_start")
+  rangeEnd    DateTime          @map("range_end")
+  mode        String            @db.VarChar(24)
+  status      String            @default("RUNNING") @db.VarChar(24)
+  recordCount Int               @default(0) @map("record_count")
+  errorReason String?           @map("error_reason") @db.Text
+  startedAt   DateTime          @default(now()) @map("started_at")
+  finishedAt  DateTime?         @map("finished_at")
+
+  @@unique([contestId, bucketAt], map: "v2_recharge_contest_sync_bucket")
+  @@index([contestId, startedAt])
+  @@map("v2_recharge_contest_sync_runs")
+}
+
+model V2RevenueSnapshot {
+  id                String                @id @default(cuid())
+  storeId           String                @map("store_id")
+  store             V2Store               @relation(fields: [storeId], references: [id])
+  kind              V2RevenueSnapshotKind
+  businessDate      DateTime              @map("business_date") @db.Date
+  externalStoreId   String                @map("external_store_id") @db.VarChar(64)
+  externalStoreName String?               @map("external_store_name")
+  subtotal          Decimal?              @db.Decimal(14, 2)
+  netFeeIncome      Decimal               @default(0) @map("net_fee_income") @db.Decimal(14, 2)
+  productSales      Decimal               @default(0) @map("product_sales") @db.Decimal(14, 2)
+  rental            Decimal               @default(0) @db.Decimal(14, 2)
+  tips              Decimal               @default(0) @db.Decimal(14, 2)
+  voucherSales      Decimal               @default(0) @map("voucher_sales") @db.Decimal(14, 2)
+  equitySales       Decimal               @default(0) @map("equity_sales") @db.Decimal(14, 2)
+  otherIncome       Decimal               @default(0) @map("other_income") @db.Decimal(14, 2)
+  otherExpense      Decimal               @default(0) @map("other_expense") @db.Decimal(14, 2)
+  otherNet          Decimal               @default(0) @map("other_net") @db.Decimal(14, 2)
+  cashAmount        Decimal?              @map("cash_amount") @db.Decimal(14, 2)
+  onlineAmount      Decimal?              @map("online_amount") @db.Decimal(14, 2)
+  capturedAt        DateTime              @map("captured_at")
+  sourceHash        String                @map("source_hash") @db.VarChar(64)
+  sourcePayload     Json?                 @map("source_payload")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+
+  @@unique([storeId, businessDate, kind], map: "v2_revenue_store_date_kind_key")
+  @@index([businessDate, kind])
+  @@index([externalStoreId, businessDate])
+  @@map("v2_revenue_snapshots")
+}
+
+model V2OtaDailySnapshot {
+  id                String   @id @default(cuid())
+  storeId           String   @map("store_id")
+  store             V2Store  @relation(fields: [storeId], references: [id])
+  businessDate      DateTime @map("business_date") @db.Date
+  externalStoreId   String   @map("external_store_id") @db.VarChar(64)
+  externalStoreName String?  @map("external_store_name")
+  totalAmount       Decimal  @default(0) @map("total_amount") @db.Decimal(14, 2)
+  meituanAmount     Decimal  @default(0) @map("meituan_amount") @db.Decimal(14, 2)
+  douyinAmount      Decimal  @default(0) @map("douyin_amount") @db.Decimal(14, 2)
+  amapAmount        Decimal  @default(0) @map("amap_amount") @db.Decimal(14, 2)
+  barAmount         Decimal  @default(0) @map("bar_amount") @db.Decimal(14, 2)
+  xminiAmount       Decimal  @default(0) @map("xmini_amount") @db.Decimal(14, 2)
+  selfServiceAmount Decimal  @default(0) @map("self_service_amount") @db.Decimal(14, 2)
+  officialAmount    Decimal  @default(0) @map("official_amount") @db.Decimal(14, 2)
+  capturedAt        DateTime @map("captured_at")
+  sourceHash        String   @map("source_hash") @db.VarChar(64)
+  sourcePayload     Json?    @map("source_payload")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([storeId, businessDate], map: "v2_ota_daily_store_date_key")
+  @@index([businessDate])
+  @@index([externalStoreId, businessDate])
+  @@map("v2_ota_daily_snapshots")
+}
+
+model V2OtaProduct {
+  id                String            @id @default(cuid())
+  storeId           String            @map("store_id")
+  store             V2Store           @relation(fields: [storeId], references: [id])
+  platform          String            @db.VarChar(32)
+  externalProductId String            @map("external_product_id") @db.VarChar(128)
+  name              String
+  amount            Decimal           @default(0) @db.Decimal(14, 2)
+  status            String?           @db.VarChar(64)
+  isBrush           Boolean           @default(false) @map("is_brush")
+  settlementRate    Decimal           @default(1) @map("settlement_rate") @db.Decimal(8, 6)
+  feeRate           Decimal           @default(0) @map("fee_rate") @db.Decimal(8, 6)
+  sourcePayload     Json?             @map("source_payload")
+  capturedAt        DateTime          @map("captured_at")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+  redemptions       V2OtaRedemption[]
+
+  @@unique([storeId, platform, externalProductId], map: "v2_ota_product_source_key")
+  @@index([storeId, isBrush])
+  @@map("v2_ota_products")
+}
+
+model V2OtaRedemption {
+  id                String        @id @default(cuid())
+  storeId           String        @map("store_id")
+  store             V2Store       @relation(fields: [storeId], references: [id])
+  productId         String?       @map("product_id")
+  product           V2OtaProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  storeShiftId      String?       @map("store_shift_id")
+  storeShift        V2StoreShift? @relation(fields: [storeShiftId], references: [id], onDelete: SetNull)
+  externalStoreId   String        @map("external_store_id") @db.VarChar(64)
+  externalOrderId   String        @map("external_order_id") @db.VarChar(128)
+  externalProductId String        @map("external_product_id") @db.VarChar(128)
+  platform          String        @db.VarChar(32)
+  productName       String        @map("product_name")
+  businessDate      DateTime      @map("business_date") @db.Date
+  operatedAt        DateTime      @map("operated_at")
+  operatorLabel     String?       @map("operator_label")
+  useSource         String?       @map("use_source") @db.VarChar(64)
+  status            String?       @db.VarChar(64)
+  amount            Decimal       @default(0) @db.Decimal(14, 2)
+  sourceHash        String        @map("source_hash") @db.VarChar(64)
+  sourcePayload     Json?         @map("source_payload")
+  capturedAt        DateTime      @map("captured_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  @@unique([externalStoreId, externalOrderId], map: "v2_ota_redemption_source_key")
+  @@index([businessDate, storeId], map: "v2_ota_redemptions_business_date_store_id_idx")
+  @@index([storeId, businessDate])
+  @@index([storeShiftId, businessDate])
+  @@index([productId, businessDate])
+  @@map("v2_ota_redemptions")
+}
+
+model V2ShiftRevenueSnapshot {
+  id                String                       @id @default(cuid())
+  storeId           String                       @map("store_id")
+  store             V2Store                      @relation(fields: [storeId], references: [id])
+  storeShiftId      String?                      @map("store_shift_id")
+  storeShift        V2StoreShift?                @relation(fields: [storeShiftId], references: [id], onDelete: SetNull)
+  sourceSystem      String                       @default("X_MANAGER") @map("source_system") @db.VarChar(64)
+  externalStoreId   String                       @map("external_store_id") @db.VarChar(64)
+  externalStoreName String?                      @map("external_store_name")
+  externalShiftId   String                       @map("external_shift_id") @db.VarChar(64)
+  businessDate      DateTime                     @map("business_date") @db.Date
+  shiftStartedAt    DateTime                     @map("shift_started_at")
+  shiftEndedAt      DateTime                     @map("shift_ended_at")
+  handedOverAt      DateTime                     @map("handed_over_at")
+  operatorLabel     String?                      @map("operator_label")
+  terminalLabel     String?                      @map("terminal_label")
+  totalIncome       Decimal                      @map("total_income") @db.Decimal(14, 2)
+  netFeeIncome      Decimal                      @default(0) @map("net_fee_income") @db.Decimal(14, 2)
+  productSales      Decimal                      @default(0) @map("product_sales") @db.Decimal(14, 2)
+  rental            Decimal                      @default(0) @db.Decimal(14, 2)
+  otherNet          Decimal                      @default(0) @map("other_net") @db.Decimal(14, 2)
+  capturedAt        DateTime                     @map("captured_at")
+  sourceHash        String                       @map("source_hash") @db.VarChar(64)
+  sourcePayload     Json?                        @map("source_payload")
+  productExclusions V2ProductExclusionSnapshot[]
+  createdAt         DateTime                     @default(now()) @map("created_at")
+  updatedAt         DateTime                     @updatedAt @map("updated_at")
+
+  @@unique([sourceSystem, externalStoreId, externalShiftId], map: "v2_shift_revenue_source_key")
+  @@index([storeId, businessDate])
+  @@index([storeShiftId, businessDate])
+  @@map("v2_shift_revenue_snapshots")
+}
+
+model V2ProductDisplayCategory {
+  id                 String    @id @default(cuid())
+  storeId            String    @map("store_id")
+  store              V2Store   @relation(fields: [storeId], references: [id])
+  externalCategoryId String    @map("external_category_id") @db.VarChar(64)
+  name               String
+  active             Boolean   @default(true)
+  inactiveAt         DateTime? @map("inactive_at")
+  excluded           Boolean   @default(false)
+  excludedFrom       DateTime? @map("excluded_from") @db.Date
+  capturedAt         DateTime  @map("captured_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@unique([storeId, externalCategoryId], map: "v2_product_category_source_key")
+  @@index([storeId, active])
+  @@index([storeId, excluded])
+  @@map("v2_product_display_categories")
+}
+
+model V2ProductExclusionSnapshot {
+  id                     String                  @id @default(cuid())
+  storeId                String                  @map("store_id")
+  store                  V2Store                 @relation(fields: [storeId], references: [id])
+  shiftRevenueSnapshotId String?                 @map("shift_revenue_snapshot_id")
+  shiftRevenueSnapshot   V2ShiftRevenueSnapshot? @relation(fields: [shiftRevenueSnapshotId], references: [id], onDelete: Cascade)
+  businessDate           DateTime                @map("business_date") @db.Date
+  kind                   String                  @db.VarChar(32)
+  sourceKey              String                  @map("source_key") @db.VarChar(128)
+  excludedAmount         Decimal                 @default(0) @map("excluded_amount") @db.Decimal(14, 2)
+  categoryIds            Json                    @map("category_ids")
+  capturedAt             DateTime                @map("captured_at")
+  sourcePayload          Json?                   @map("source_payload")
+  createdAt              DateTime                @default(now()) @map("created_at")
+  updatedAt              DateTime                @updatedAt @map("updated_at")
+
+  @@unique([storeId, businessDate, kind, sourceKey], map: "v2_product_exclusion_snapshot_key")
+  @@index([storeId, businessDate, kind])
+  @@index([shiftRevenueSnapshotId])
+  @@map("v2_product_exclusion_snapshots")
+}
+
+model V2PositionTemplate {
+  id                       String            @id @default(cuid())
+  name                     String
+  code                     String            @unique
+  description              String?           @db.Text
+  sort                     Int               @default(0)
+  enabled                  Boolean           @default(true)
+  monthlyBaseSalary        Decimal           @default(0) @map("monthly_base_salary") @db.Decimal(14, 2)
+  monthlyPerformanceSalary Decimal           @default(0) @map("monthly_performance_salary") @db.Decimal(14, 2)
+  hourlyRate               Decimal           @default(0) @map("hourly_rate") @db.Decimal(14, 2)
+  roleId                   String?           @map("role_id")
+  role                     V2Role?           @relation("V2PositionTemplateRole", fields: [roleId], references: [id], onDelete: SetNull)
+  positions                V2StorePosition[]
+  createdAt                DateTime          @default(now()) @map("created_at")
+  updatedAt                DateTime          @updatedAt @map("updated_at")
+  createdBy                String?           @map("created_by")
+  updatedBy                String?           @map("updated_by")
+  deletedAt                DateTime?         @map("deleted_at")
+
+  @@index([roleId])
+  @@map("v2_position_templates")
+}
+
+model V2ShiftTemplate {
+  id           String         @id @default(cuid())
+  name         String
+  code         String         @unique
+  startsAt     String         @map("starts_at") @db.VarChar(5)
+  endsAt       String         @map("ends_at") @db.VarChar(5)
+  spansNextDay Boolean        @default(false) @map("spans_next_day")
+  sort         Int            @default(0)
+  enabled      Boolean        @default(true)
+  storeShifts  V2StoreShift[]
+  createdAt    DateTime       @default(now()) @map("created_at")
+  updatedAt    DateTime       @updatedAt @map("updated_at")
+  deletedAt    DateTime?      @map("deleted_at")
+
+  @@map("v2_shift_templates")
+}
+
+model V2StorePosition {
+  id          String                 @id @default(cuid())
+  storeId     String                 @map("store_id")
+  store       V2Store                @relation(fields: [storeId], references: [id])
+  templateId  String?                @map("template_id")
+  template    V2PositionTemplate?    @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  source      V2PositionSource
+  name        String
+  code        String
+  description String?                @db.Text
+  sort        Int                    @default(0)
+  enabled     Boolean                @default(true)
+  employments V2Employment[]
+  assignments V2ScheduleAssignment[]
+  createdAt   DateTime               @default(now()) @map("created_at")
+  updatedAt   DateTime               @updatedAt @map("updated_at")
+  createdBy   String?                @map("created_by")
+  updatedBy   String?                @map("updated_by")
+  deletedAt   DateTime?              @map("deleted_at")
+
+  @@unique([storeId, code])
+  @@unique([storeId, templateId])
+  @@index([templateId])
+  @@map("v2_store_positions")
+}
+
+model V2Employee {
+  id                      String                     @id @default(cuid())
+  employeeNo              String                     @unique @map("employee_no")
+  name                    String
+  phone                   String?
+  idNumberMasked          String?                    @map("id_number_masked")
+  status                  V2EmployeeStatus           @default(PENDING)
+  hiredOn                 DateTime?                  @map("hired_on") @db.Date
+  terminatedOn            DateTime?                  @map("terminated_on") @db.Date
+  employments             V2Employment[]
+  organizationEmployments V2OrganizationEmployment[]
+  changes                 V2EmploymentHistory[]
+  leaves                  V2EmployeeLeave[]
+  account                 V2Account?
+  assignments             V2ScheduleAssignment[]
+  scores                  V2EmployeeScore[]
+  payrollResults          V2PayrollEmployeeResult[]
+  payrollAdjustments      V2PayrollAdjustment[]
+  payrollProfiles         V2EmployeePayrollProfile[]
+  createdAt               DateTime                   @default(now()) @map("created_at")
+  updatedAt               DateTime                   @updatedAt @map("updated_at")
+  createdBy               String?                    @map("created_by")
+  updatedBy               String?                    @map("updated_by")
+  deletedAt               DateTime?                  @map("deleted_at")
+
+  @@index([status])
+  @@map("v2_employees")
+}
+
+model V2EmployeePayrollProfile {
+  id                    String     @id @default(cuid())
+  employeeId            String     @map("employee_id")
+  employee              V2Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  employeeType          String     @map("employee_type") @db.VarChar(24)
+  grade                 String?    @db.VarChar(12)
+  category              String?    @db.VarChar(12)
+  probationary          Boolean    @default(false)
+  baseSalary            Decimal    @default(0) @map("base_salary") @db.Decimal(14, 2)
+  performanceBase       Decimal    @default(0) @map("performance_base") @db.Decimal(14, 2)
+  socialSecurityScheme  String?    @map("social_security_scheme") @db.VarChar(24)
+  socialSecuritySubsidy Decimal    @default(0) @map("social_security_subsidy") @db.Decimal(14, 2)
+  rankAllowance         Decimal    @default(0) @map("rank_allowance") @db.Decimal(14, 2)
+  mealAllowanceRate     Decimal    @default(0) @map("meal_allowance_rate") @db.Decimal(14, 2)
+  makeupAllowance       Decimal    @default(0) @map("makeup_allowance") @db.Decimal(14, 2)
+  employeeInsurance     Decimal    @default(0) @map("employee_insurance") @db.Decimal(14, 2)
+  employeeProvidentFund Decimal    @default(0) @map("employee_provident_fund") @db.Decimal(14, 2)
+  employerInsurance     Decimal    @default(0) @map("employer_insurance") @db.Decimal(14, 2)
+  employerProvidentFund Decimal    @default(0) @map("employer_provident_fund") @db.Decimal(14, 2)
+  effectiveFrom         DateTime   @map("effective_from") @db.Date
+  effectiveTo           DateTime?  @map("effective_to") @db.Date
+  reason                String?    @db.VarChar(500)
+  createdAt             DateTime   @default(now()) @map("created_at")
+  updatedAt             DateTime   @updatedAt @map("updated_at")
+  createdBy             String?    @map("created_by")
+  updatedBy             String?    @map("updated_by")
+
+  @@index([employeeId, effectiveFrom, effectiveTo], map: "v2_emp_pay_profile_effective_idx")
+  @@map("v2_employee_payroll_profiles")
+}
+
+model V2PayrollProfileTemplate {
+  id                    String   @id @default(cuid())
+  name                  String
+  code                  String   @unique @db.VarChar(60)
+  employeeType          String   @map("employee_type") @db.VarChar(24)
+  positionKeyword       String?  @map("position_keyword") @db.VarChar(40)
+  grade                 String?  @db.VarChar(12)
+  category              String?  @db.VarChar(12)
+  probationary          Boolean  @default(false)
+  isDefault             Boolean  @default(false) @map("is_default")
+  baseSalary            Decimal  @default(0) @map("base_salary") @db.Decimal(14, 2)
+  performanceBase       Decimal  @default(0) @map("performance_base") @db.Decimal(14, 2)
+  socialSecurityScheme  String?  @map("social_security_scheme") @db.VarChar(24)
+  socialSecuritySubsidy Decimal  @default(0) @map("social_security_subsidy") @db.Decimal(14, 2)
+  rankAllowance         Decimal  @default(0) @map("rank_allowance") @db.Decimal(14, 2)
+  mealAllowanceRate     Decimal  @default(0) @map("meal_allowance_rate") @db.Decimal(14, 2)
+  makeupAllowance       Decimal  @default(0) @map("makeup_allowance") @db.Decimal(14, 2)
+  employeeInsurance     Decimal  @default(0) @map("employee_insurance") @db.Decimal(14, 2)
+  employeeProvidentFund Decimal  @default(0) @map("employee_provident_fund") @db.Decimal(14, 2)
+  employerInsurance     Decimal  @default(0) @map("employer_insurance") @db.Decimal(14, 2)
+  employerProvidentFund Decimal  @default(0) @map("employer_provident_fund") @db.Decimal(14, 2)
+  enabled               Boolean  @default(true)
+  sort                  Int      @default(0)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+  createdBy             String?  @map("created_by")
+  updatedBy             String?  @map("updated_by")
+
+  @@index([employeeType, grade, category, enabled], map: "v2_pay_template_match_idx")
+  @@map("v2_payroll_profile_templates")
+}
+
+model V2PayrollBatch {
+  id                   String                    @id @default(cuid())
+  payrollMonth         DateTime                  @unique @map("payroll_month") @db.Date
+  status               V2PayrollBatchStatus      @default(DRAFT)
+  formulaVersion       String                    @map("formula_version") @db.VarChar(40)
+  monthlyProrationDays Decimal                   @default(26) @map("monthly_proration_days") @db.Decimal(6, 2)
+  calculatedAt         DateTime?                 @map("calculated_at")
+  calculatedBy         String?                   @map("calculated_by")
+  reviewedAt           DateTime?                 @map("reviewed_at")
+  reviewedBy           String?                   @map("reviewed_by")
+  approvedAt           DateTime?                 @map("approved_at")
+  approvedBy           String?                   @map("approved_by")
+  lockedAt             DateTime?                 @map("locked_at")
+  lockedBy             String?                   @map("locked_by")
+  paidAt               DateTime?                 @map("paid_at")
+  paidBy               String?                   @map("paid_by")
+  notes                String?                   @db.Text
+  storeProfits         V2PayrollStoreProfit[]
+  employeeResults      V2PayrollEmployeeResult[]
+  adjustments          V2PayrollAdjustment[]
+  auditLogs            V2PayrollAuditLog[]
+  createdAt            DateTime                  @default(now()) @map("created_at")
+  updatedAt            DateTime                  @updatedAt @map("updated_at")
+  createdBy            String?                   @map("created_by")
+  updatedBy            String?                   @map("updated_by")
+
+  @@index([status, payrollMonth])
+  @@map("v2_payroll_batches")
+}
+
+model V2PayrollStoreProfit {
+  id                   String         @id @default(cuid())
+  batchId              String         @map("batch_id")
+  batch                V2PayrollBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  storeId              String         @map("store_id")
+  store                V2Store        @relation(fields: [storeId], references: [id])
+  targetProfit         Decimal        @map("target_profit") @db.Decimal(14, 2)
+  actualProfit         Decimal        @map("actual_profit") @db.Decimal(14, 2)
+  achievementRate      Decimal        @map("achievement_rate") @db.Decimal(10, 6)
+  excessProfit         Decimal        @map("excess_profit") @db.Decimal(14, 2)
+  bonusPool            Decimal        @map("bonus_pool") @db.Decimal(14, 2)
+  includedInHeadOffice Boolean        @default(true) @map("included_in_head_office")
+  exclusionReason      String?        @map("exclusion_reason") @db.VarChar(500)
+  exclusionConfirmedBy String?        @map("exclusion_confirmed_by")
+  exclusionConfirmedAt DateTime?      @map("exclusion_confirmed_at")
+  createdAt            DateTime       @default(now()) @map("created_at")
+  updatedAt            DateTime       @updatedAt @map("updated_at")
+  createdBy            String?        @map("created_by")
+  updatedBy            String?        @map("updated_by")
+
+  @@unique([batchId, storeId])
+  @@index([storeId, batchId])
+  @@map("v2_payroll_store_profits")
+}
+
+model V2PayrollEmployeeResult {
+  id                       String         @id @default(cuid())
+  batchId                  String         @map("batch_id")
+  batch                    V2PayrollBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  employeeId               String         @map("employee_id")
+  employee                 V2Employee     @relation(fields: [employeeId], references: [id])
+  storeId                  String?        @map("store_id")
+  employeeType             String         @map("employee_type") @db.VarChar(24)
+  formulaVersion           String         @map("formula_version") @db.VarChar(40)
+  inputSnapshot            Json           @map("input_snapshot")
+  calculationBreakdown     Json           @map("calculation_breakdown")
+  grossPay                 Decimal        @map("gross_pay") @db.Decimal(14, 2)
+  employeeDeductions       Decimal        @map("employee_deductions") @db.Decimal(14, 2)
+  netPay                   Decimal        @map("net_pay") @db.Decimal(14, 2)
+  employerContributions    Decimal        @map("employer_contributions") @db.Decimal(14, 2)
+  employerCost             Decimal        @map("employer_cost") @db.Decimal(14, 2)
+  attendanceQualified      Boolean        @default(false) @map("attendance_qualified")
+  attendanceOverride       Boolean?       @map("attendance_override")
+  attendanceOverrideReason String?        @map("attendance_override_reason") @db.VarChar(500)
+  attendanceOverrideBy     String?        @map("attendance_override_by")
+  attendanceOverrideAt     DateTime?      @map("attendance_override_at")
+  createdAt                DateTime       @default(now()) @map("created_at")
+  updatedAt                DateTime       @updatedAt @map("updated_at")
+
+  @@unique([batchId, employeeId])
+  @@index([batchId, storeId])
+  @@index([employeeId, batchId])
+  @@map("v2_payroll_employee_results")
+}
+
+model V2PayrollAdjustment {
+  id         String                       @id @default(cuid())
+  batchId    String                       @map("batch_id")
+  batch      V2PayrollBatch               @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  employeeId String                       @map("employee_id")
+  employee   V2Employee                   @relation(fields: [employeeId], references: [id])
+  storeId    String?                      @map("store_id")
+  itemCode   String                       @map("item_code") @db.VarChar(40)
+  itemName   String                       @map("item_name") @db.VarChar(80)
+  direction  V2PayrollAdjustmentDirection
+  amount     Decimal                      @db.Decimal(14, 2)
+  taxable    Boolean                      @default(true)
+  reason     String                       @db.VarChar(500)
+  status     V2PayrollAdjustmentStatus    @default(DRAFT)
+  approvedAt DateTime?                    @map("approved_at")
+  approvedBy String?                      @map("approved_by")
+  createdAt  DateTime                     @default(now()) @map("created_at")
+  updatedAt  DateTime                     @updatedAt @map("updated_at")
+  createdBy  String?                      @map("created_by")
+  updatedBy  String?                      @map("updated_by")
+
+  @@index([batchId, employeeId, status])
+  @@index([storeId, batchId])
+  @@map("v2_payroll_adjustments")
+}
+
+model V2PayrollAuditLog {
+  id         String         @id @default(cuid())
+  batchId    String         @map("batch_id")
+  batch      V2PayrollBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  action     String         @db.VarChar(60)
+  entityType String         @map("entity_type") @db.VarChar(40)
+  entityId   String?        @map("entity_id")
+  beforeData Json?          @map("before_data")
+  afterData  Json?          @map("after_data")
+  reason     String?        @db.VarChar(500)
+  actorId    String         @map("actor_id")
+  actorName  String         @map("actor_name")
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  @@index([batchId, createdAt])
+  @@index([actorId, createdAt])
+  @@map("v2_payroll_audit_logs")
+}
+
+model V2Employment {
+  id               String                @id @default(cuid())
+  employeeId       String                @map("employee_id")
+  employee         V2Employee            @relation(fields: [employeeId], references: [id])
+  storeId          String                @map("store_id")
+  store            V2Store               @relation(fields: [storeId], references: [id])
+  positionId       String                @map("position_id")
+  position         V2StorePosition       @relation(fields: [positionId], references: [id])
+  startedOn        DateTime              @map("started_on") @db.Date
+  endedOn          DateTime?             @map("ended_on") @db.Date
+  isPrimary        Boolean               @default(true) @map("is_primary")
+  compensationType String                @default("MONTHLY") @map("compensation_type") @db.VarChar(12)
+  histories        V2EmploymentHistory[]
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  createdBy        String?               @map("created_by")
+  updatedBy        String?               @map("updated_by")
+  deletedAt        DateTime?             @map("deleted_at")
+
+  @@index([employeeId, startedOn, endedOn])
+  @@index([storeId, positionId, endedOn])
+  @@map("v2_employments")
+}
+
+model V2EmploymentHistory {
+  id           String                 @id @default(cuid())
+  employeeId   String                 @map("employee_id")
+  employee     V2Employee             @relation(fields: [employeeId], references: [id])
+  employmentId String?                @map("employment_id")
+  employment   V2Employment?          @relation(fields: [employmentId], references: [id], onDelete: SetNull)
+  changeType   V2EmploymentChangeType @map("change_type")
+  effectiveOn  DateTime               @map("effective_on") @db.Date
+  beforeData   Json?                  @map("before_data")
+  afterData    Json?                  @map("after_data")
+  reason       String?                @db.Text
+  createdAt    DateTime               @default(now()) @map("created_at")
+  createdBy    String?                @map("created_by")
+
+  @@index([employeeId, effectiveOn])
+  @@index([employmentId])
+  @@map("v2_employment_histories")
+}
+
+model V2EmployeeLeave {
+  id         String        @id @default(cuid())
+  employeeId String        @map("employee_id")
+  employee   V2Employee    @relation(fields: [employeeId], references: [id])
+  storeId    String        @map("store_id")
+  store      V2Store       @relation(fields: [storeId], references: [id])
+  type       V2LeaveType
+  status     V2LeaveStatus @default(PENDING)
+  startsAt   DateTime      @map("starts_at")
+  endsAt     DateTime      @map("ends_at")
+  reason     String?       @db.Text
+  reviewedAt DateTime?     @map("reviewed_at")
+  reviewedBy String?       @map("reviewed_by")
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+  createdBy  String?       @map("created_by")
+  updatedBy  String?       @map("updated_by")
+  deletedAt  DateTime?     @map("deleted_at")
+
+  @@index([employeeId, startsAt, endsAt])
+  @@index([storeId, status, startsAt])
+  @@map("v2_employee_leaves")
+}
+
+model V2StoreOperatingProfile {
+  id              String    @id @default(cuid())
+  storeId         String    @unique @map("store_id")
+  store           V2Store   @relation(fields: [storeId], references: [id])
+  legalEntityName String?   @map("legal_entity_name")
+  usableAreaSqm   Decimal?  @map("usable_area_sqm") @db.Decimal(10, 2)
+  seatCount       Int       @default(0) @map("seat_count")
+  leaseStartsOn   DateTime? @map("lease_starts_on") @db.Date
+  leaseEndsOn     DateTime? @map("lease_ends_on") @db.Date
+  notes           String?   @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  createdBy       String?   @map("created_by")
+  updatedBy       String?   @map("updated_by")
+
+  @@map("v2_store_operating_profiles")
+}
+
+model V2CostItemTemplate {
+  id               String                  @id @default(cuid())
+  name             String
+  code             String                  @unique
+  category         String
+  defaultMethod    V2CostCalculationMethod @map("default_method")
+  defaultFrequency V2CostFrequency         @map("default_frequency")
+  description      String?                 @db.Text
+  sort             Int                     @default(0)
+  enabled          Boolean                 @default(true)
+  configs          V2StoreCostConfig[]
+  createdAt        DateTime                @default(now()) @map("created_at")
+  updatedAt        DateTime                @updatedAt @map("updated_at")
+  createdBy        String?                 @map("created_by")
+  updatedBy        String?                 @map("updated_by")
+  deletedAt        DateTime?               @map("deleted_at")
+
+  @@index([category, sort])
+  @@map("v2_cost_item_templates")
+}
+
+model V2StoreCostConfig {
+  id                 String                  @id @default(cuid())
+  storeId            String                  @map("store_id")
+  store              V2Store                 @relation(fields: [storeId], references: [id])
+  templateId         String?                 @map("template_id")
+  template           V2CostItemTemplate?     @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  name               String
+  code               String
+  category           String
+  method             V2CostCalculationMethod
+  frequency          V2CostFrequency
+  fixedAmount        Decimal?                @map("fixed_amount") @db.Decimal(14, 2)
+  rate               Decimal?                @db.Decimal(9, 6)
+  formula            String?                 @db.Text
+  effectiveFrom      DateTime                @map("effective_from") @db.Date
+  effectiveTo        DateTime?               @map("effective_to") @db.Date
+  historicalBaseline Boolean                 @default(false) @map("historical_baseline")
+  enabled            Boolean                 @default(true)
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+  createdBy          String?                 @map("created_by")
+  updatedBy          String?                 @map("updated_by")
+  deletedAt          DateTime?               @map("deleted_at")
+
+  @@unique([storeId, code, effectiveFrom])
+  @@index([storeId, effectiveFrom, effectiveTo])
+  @@index([templateId])
+  @@map("v2_store_cost_configs")
+}
+
+model V2StoreCostCorrection {
+  id             String                  @id @default(cuid())
+  storeId        String                  @map("store_id")
+  store          V2Store                 @relation(fields: [storeId], references: [id])
+  sourceConfigId String?                 @map("source_config_id")
+  costMonth      DateTime                @map("cost_month") @db.Date
+  code           String
+  name           String
+  category       String
+  method         V2CostCalculationMethod
+  frequency      V2CostFrequency
+  fixedAmount    Decimal?                @map("fixed_amount") @db.Decimal(14, 2)
+  rate           Decimal?                @db.Decimal(9, 6)
+  formula        String?                 @db.Text
+  reason         String                  @db.VarChar(500)
+  createdAt      DateTime                @default(now()) @map("created_at")
+  updatedAt      DateTime                @updatedAt @map("updated_at")
+  createdBy      String?                 @map("created_by")
+  updatedBy      String?                 @map("updated_by")
+
+  @@unique([storeId, code, costMonth])
+  @@index([storeId, costMonth])
+  @@map("v2_store_cost_corrections")
+}
+
+model V2StoreInvestment {
+  id          String           @id @default(cuid())
+  storeId     String           @map("store_id")
+  store       V2Store          @relation(fields: [storeId], references: [id])
+  type        V2InvestmentType
+  category    String
+  name        String
+  amount      Decimal          @db.Decimal(14, 2)
+  occurredOn  DateTime         @map("occurred_on") @db.Date
+  description String?          @db.Text
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  createdBy   String?          @map("created_by")
+  updatedBy   String?          @map("updated_by")
+  deletedAt   DateTime?        @map("deleted_at")
+
+  @@index([storeId, occurredOn, type])
+  @@map("v2_store_investments")
+}
+
+model V2StoreAsset {
+  id                        String        @id @default(cuid())
+  storeId                   String        @map("store_id")
+  store                     V2Store       @relation(fields: [storeId], references: [id])
+  areaId                    String?       @map("area_id")
+  area                      V2StoreArea?  @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  assetNo                   String        @map("asset_no")
+  category                  String
+  name                      String
+  brand                     String?
+  model                     String?
+  quantity                  Int           @default(1)
+  purchasePrice             Decimal?      @map("purchase_price") @db.Decimal(14, 2)
+  purchasedOn               DateTime?     @map("purchased_on") @db.Date
+  expectedReplacementMonths Int?          @map("expected_replacement_months")
+  status                    V2AssetStatus @default(ACTIVE)
+  notes                     String?       @db.Text
+  createdAt                 DateTime      @default(now()) @map("created_at")
+  updatedAt                 DateTime      @updatedAt @map("updated_at")
+  createdBy                 String?       @map("created_by")
+  updatedBy                 String?       @map("updated_by")
+  deletedAt                 DateTime?     @map("deleted_at")
+
+  @@unique([storeId, assetNo])
+  @@index([storeId, category, status])
+  @@index([areaId])
+  @@map("v2_store_assets")
+}
+
+model V2StoreArea {
+  id          String         @id @default(cuid())
+  storeId     String         @map("store_id")
+  store       V2Store        @relation(fields: [storeId], references: [id])
+  name        String
+  code        String
+  description String?        @db.Text
+  sort        Int            @default(0)
+  enabled     Boolean        @default(true)
+  assets      V2StoreAsset[]
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  createdBy   String?        @map("created_by")
+  updatedBy   String?        @map("updated_by")
+  deletedAt   DateTime?      @map("deleted_at")
+
+  @@unique([storeId, code])
+  @@index([storeId, sort])
+  @@map("v2_store_areas")
+}
+
+model V2Account {
+  attendanceWechatBinding V2AttendanceWechatBinding?
+  id                      String                     @id @default(cuid())
+  employeeId              String?                    @unique @map("employee_id")
+  employee                V2Employee?                @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  username                String                     @unique
+  passwordHash            String                     @map("password_hash")
+  mustChangePassword      Boolean                    @default(true) @map("must_change_password")
+  displayName             String                     @map("display_name")
+  status                  V2AccountStatus            @default(ACTIVE)
+  dataScope               V2DataScopeType            @default(EMPLOYEE_STORE) @map("data_scope")
+  lastLoginAt             DateTime?                  @map("last_login_at")
+  roles                   V2AccountRole[]
+  storeScopes             V2AccountStoreScope[]
+  createdAt               DateTime                   @default(now()) @map("created_at")
+  updatedAt               DateTime                   @updatedAt @map("updated_at")
+  createdBy               String?                    @map("created_by")
+  updatedBy               String?                    @map("updated_by")
+  deletedAt               DateTime?                  @map("deleted_at")
+
+  @@index([status])
+  @@map("v2_accounts")
+}
+
+model LoginLog {
+  id          String   @id @default(cuid())
+  accountType String   @map("account_type")
+  accountId   String   @map("account_id")
+  username    String
+  displayName String   @map("display_name")
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent") @db.Text
+  loggedInAt  DateTime @default(now()) @map("logged_in_at")
+
+  @@index([accountType, accountId, loggedInAt])
+  @@index([loggedInAt])
+  @@map("login_logs")
+}
+
+model V2Role {
+  id                    String                   @id @default(cuid())
+  name                  String
+  code                  String                   @unique
+  description           String?                  @db.Text
+  enabled               Boolean                  @default(true)
+  accounts              V2AccountRole[]
+  permissions           V2RolePermission[]
+  positionTemplates     V2PositionTemplate[]     @relation("V2PositionTemplateRole")
+  organizationPositions V2OrganizationPosition[] @relation("V2OrganizationPositionRole")
+  createdAt             DateTime                 @default(now()) @map("created_at")
+  updatedAt             DateTime                 @updatedAt @map("updated_at")
+  deletedAt             DateTime?                @map("deleted_at")
+
+  @@map("v2_roles")
+}
+
+model V2Permission {
+  id          String             @id @default(cuid())
+  code        String             @unique
+  name        String
+  module      String
+  description String?            @db.Text
+  roles       V2RolePermission[]
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  @@index([module])
+  @@map("v2_permissions")
+}
+
+model V2SystemSequence {
+  key          String   @id @db.VarChar(80)
+  currentValue Int      @default(0) @map("current_value")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("v2_system_sequences")
+}
+
+model V2AccountRole {
+  accountId String    @map("account_id")
+  account   V2Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  roleId    String    @map("role_id")
+  role      V2Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now()) @map("created_at")
+  createdBy String?   @map("created_by")
+
+  @@id([accountId, roleId])
+  @@index([roleId])
+  @@map("v2_account_roles")
+}
+
+model V2RolePermission {
+  roleId       String       @map("role_id")
+  role         V2Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String       @map("permission_id")
+  permission   V2Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("v2_role_permissions")
+}
+
+model V2AccountStoreScope {
+  accountId String    @map("account_id")
+  account   V2Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  storeId   String    @map("store_id")
+  store     V2Store   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now()) @map("created_at")
+  createdBy String?   @map("created_by")
+
+  @@id([accountId, storeId])
+  @@index([storeId])
+  @@map("v2_account_store_scopes")
+}
+
+model V2StoreShift {
+  id               String                   @id @default(cuid())
+  storeId          String                   @map("store_id")
+  store            V2Store                  @relation(fields: [storeId], references: [id])
+  templateId       String?                  @map("template_id")
+  template         V2ShiftTemplate?         @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  name             String
+  code             String
+  startsAt         String                   @map("starts_at") @db.VarChar(5)
+  endsAt           String                   @map("ends_at") @db.VarChar(5)
+  spansNextDay     Boolean                  @default(false) @map("spans_next_day")
+  sort             Int                      @default(0)
+  enabled          Boolean                  @default(true)
+  assignments      V2ScheduleAssignment[]
+  allocations      V2TargetAllocation[]
+  revenueSnapshots V2ShiftRevenueSnapshot[]
+  otaRedemptions   V2OtaRedemption[]
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  deletedAt        DateTime?                @map("deleted_at")
+
+  @@unique([storeId, code])
+  @@unique([storeId, templateId])
+  @@index([storeId, sort])
+  @@map("v2_store_shifts")
+}
+
+model V2SchedulePeriod {
+  id          String                 @id @default(cuid())
+  storeId     String                 @map("store_id")
+  store       V2Store                @relation(fields: [storeId], references: [id])
+  startsOn    DateTime               @map("starts_on") @db.Date
+  endsOn      DateTime               @map("ends_on") @db.Date
+  status      V2PlanStatus           @default(DRAFT)
+  publishedAt DateTime?              @map("published_at")
+  lockedAt    DateTime?              @map("locked_at")
+  assignments V2ScheduleAssignment[]
+  createdAt   DateTime               @default(now()) @map("created_at")
+  updatedAt   DateTime               @updatedAt @map("updated_at")
+  createdBy   String?                @map("created_by")
+  updatedBy   String?                @map("updated_by")
+
+  @@unique([storeId, startsOn, endsOn])
+  @@index([storeId, status, startsOn])
+  @@map("v2_schedule_periods")
+}
+
+model V2ScheduleAssignment {
+  attendancePunches     V2AttendancePunch[]
+  attendanceCorrections V2AttendanceCorrection[]
+  id                    String                   @id @default(cuid())
+  periodId              String                   @map("period_id")
+  period                V2SchedulePeriod         @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  workDate              DateTime                 @map("work_date") @db.Date
+  shiftId               String                   @map("shift_id")
+  shift                 V2StoreShift             @relation(fields: [shiftId], references: [id])
+  employeeId            String                   @map("employee_id")
+  employee              V2Employee               @relation(fields: [employeeId], references: [id])
+  positionId            String                   @map("position_id")
+  position              V2StorePosition          @relation(fields: [positionId], references: [id])
+  lockedAt              DateTime?                @map("locked_at")
+  note                  String?                  @db.Text
+  createdAt             DateTime                 @default(now()) @map("created_at")
+  updatedAt             DateTime                 @updatedAt @map("updated_at")
+  createdBy             String?                  @map("created_by")
+  updatedBy             String?                  @map("updated_by")
+
+  @@unique([periodId, workDate, shiftId, employeeId], map: "v2_schedule_assignment_slot_key")
+  @@index([employeeId, workDate])
+  @@index([shiftId, workDate])
+  @@map("v2_schedule_assignments")
+}
+
+model V2ScorePlan {
+  id          String             @id @default(cuid())
+  name        String
+  code        String
+  version     Int
+  description String?            @db.Text
+  enabled     Boolean            @default(true)
+  criteria    V2ScoreCriterion[]
+  scores      V2EmployeeScore[]
+  createdAt   DateTime           @default(now()) @map("created_at")
+  updatedAt   DateTime           @updatedAt @map("updated_at")
+
+  @@unique([code, version])
+  @@map("v2_score_plans")
+}
+
+model V2ScoreCriterion {
+  id          String      @id @default(cuid())
+  planId      String      @map("plan_id")
+  plan        V2ScorePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  name        String
+  code        String
+  weight      Decimal     @db.Decimal(7, 4)
+  maxScore    Decimal     @map("max_score") @db.Decimal(8, 2)
+  description String?     @db.Text
+  sort        Int         @default(0)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@unique([planId, code])
+  @@index([planId, sort])
+  @@map("v2_score_criteria")
+}
+
+model V2EmployeeScore {
+  id          String        @id @default(cuid())
+  employeeId  String        @map("employee_id")
+  employee    V2Employee    @relation(fields: [employeeId], references: [id])
+  storeId     String        @map("store_id")
+  store       V2Store       @relation(fields: [storeId], references: [id])
+  planId      String        @map("plan_id")
+  plan        V2ScorePlan   @relation(fields: [planId], references: [id])
+  periodMonth DateTime      @map("period_month") @db.Date
+  totalScore  Decimal       @map("total_score") @db.Decimal(8, 2)
+  level       String?
+  detail      Json
+  status      V2ScoreStatus @default(DRAFT)
+  confirmedAt DateTime?     @map("confirmed_at")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  createdBy   String?       @map("created_by")
+  updatedBy   String?       @map("updated_by")
+
+  @@unique([employeeId, planId, periodMonth])
+  @@index([storeId, periodMonth, totalScore])
+  @@map("v2_employee_scores")
+}
+
+model V2OperatingTarget {
+  id            String               @id @default(cuid())
+  storeId       String               @map("store_id")
+  store         V2Store              @relation(fields: [storeId], references: [id])
+  targetMonth   DateTime             @map("target_month") @db.Date
+  revenueTarget Decimal              @map("revenue_target") @db.Decimal(14, 2)
+  profitTarget  Decimal?             @map("profit_target") @db.Decimal(14, 2)
+  status        V2PlanStatus         @default(DRAFT)
+  ruleVersion   String               @map("rule_version")
+  allocations   V2TargetAllocation[]
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
+  createdBy     String?              @map("created_by")
+  updatedBy     String?              @map("updated_by")
+
+  @@unique([storeId, targetMonth])
+  @@index([targetMonth, status])
+  @@map("v2_operating_targets")
+}
+
+model V2WecomWebhookConfig {
+  id                 String           @id @default(cuid())
+  name               String
+  webhookEncrypted   String           @map("webhook_encrypted") @db.Text
+  webhookMasked      String           @map("webhook_masked")
+  reportType         String           @default("ALL") @map("report_type")
+  storeIds           Json             @map("store_ids")
+  enabled            Boolean          @default(true)
+  lastTestedAt       DateTime?        @map("last_tested_at")
+  lastTestStatus     String?          @map("last_test_status")
+  lastTestMessage    String?          @map("last_test_message") @db.Text
+  scheduleEnabled    Boolean          @default(false) @map("schedule_enabled")
+  scheduleFrequency  String?          @map("schedule_frequency")
+  scheduleTime       String?          @map("schedule_time")
+  scheduleWeekday    Int?             @map("schedule_weekday")
+  scheduleMonthDay   Int?             @map("schedule_month_day")
+  lastScheduleKey    String?          @map("last_schedule_key")
+  lastScheduledAt    DateTime?        @map("last_scheduled_at")
+  lastScheduleStatus String?          @map("last_schedule_status")
+  lastScheduleError  String?          @map("last_schedule_error") @db.Text
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+  createdBy          String?          @map("created_by")
+  updatedBy          String?          @map("updated_by")
+  deletedAt          DateTime?        @map("deleted_at")
+  pushLogs           V2WecomPushLog[]
+
+  @@index([enabled, deletedAt])
+  @@map("v2_wecom_webhook_configs")
+}
+
+model V2WecomPushLog {
+  id           String               @id @default(cuid())
+  configId     String               @map("config_id")
+  config       V2WecomWebhookConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  reportType   String               @map("report_type")
+  reportMonth  String               @map("report_month")
+  storeIds     Json                 @map("store_ids")
+  snapshot     Json
+  status       String
+  imageBytes   Int?                 @map("image_bytes")
+  imageMd5     String?              @map("image_md5")
+  errorMessage String?              @map("error_message") @db.Text
+  createdAt    DateTime             @default(now()) @map("created_at")
+  sentAt       DateTime?            @map("sent_at")
+
+  @@index([configId, createdAt])
+  @@index([status, createdAt])
+  @@map("v2_wecom_push_logs")
+}
+
+model V2TargetAllocation {
+  id           String            @id @default(cuid())
+  targetId     String            @map("target_id")
+  target       V2OperatingTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  businessDate DateTime          @map("business_date") @db.Date
+  shiftId      String?           @map("shift_id")
+  shift        V2StoreShift?     @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  category     String
+  targetAmount Decimal           @map("target_amount") @db.Decimal(14, 2)
+  actualAmount Decimal?          @map("actual_amount") @db.Decimal(14, 2)
+  lockedAt     DateTime?         @map("locked_at")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  @@unique([targetId, businessDate, shiftId, category], map: "v2_target_allocation_slot_key")
+  @@index([businessDate, shiftId])
+  @@map("v2_target_allocations")
+}
+
+model V2DataSourceConnection {
+  id                String                @id @default(cuid())
+  storeId           String                @unique @map("store_id")
+  store             V2Store               @relation(fields: [storeId], references: [id])
+  sourceSystem      String                @default("X_MANAGER") @map("source_system")
+  externalStoreId   String                @map("external_store_id")
+  externalStoreName String?               @map("external_store_name")
+  enabledModules    Json                  @map("enabled_modules")
+  sessionStatus     V2SourceSessionStatus @default(UNCONFIGURED) @map("session_status")
+  lastCheckedAt     DateTime?             @map("last_checked_at")
+  lastSucceededAt   DateTime?             @map("last_succeeded_at")
+  lastError         String?               @map("last_error") @db.Text
+  jobs              V2SyncJob[]
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+  createdBy         String?               @map("created_by")
+  updatedBy         String?               @map("updated_by")
+
+  @@unique([sourceSystem, externalStoreId])
+  @@index([sessionStatus])
+  @@map("v2_data_source_connections")
+}
+
+model V2ExternalStoreCandidate {
+  id                String                         @id @default(cuid())
+  sourceSystem      String                         @default("X_MANAGER") @map("source_system") @db.VarChar(64)
+  externalStoreId   String                         @map("external_store_id") @db.VarChar(64)
+  externalBranchId  String?                        @map("external_branch_id") @db.VarChar(128)
+  externalStoreName String?                        @map("external_store_name")
+  status            V2ExternalStoreCandidateStatus @default(PENDING)
+  contractVersion   String?                        @map("contract_version") @db.VarChar(16)
+  qualityWarnings   Json?                          @map("quality_warnings")
+  firstSeenAt       DateTime                       @default(now()) @map("first_seen_at")
+  lastSeenAt        DateTime                       @default(now()) @map("last_seen_at")
+  reviewedAt        DateTime?                      @map("reviewed_at")
+  reviewedBy        String?                        @map("reviewed_by")
+  createdAt         DateTime                       @default(now()) @map("created_at")
+  updatedAt         DateTime                       @updatedAt @map("updated_at")
+
+  @@unique([sourceSystem, externalStoreId], map: "v2_external_store_candidate_source_key")
+  @@index([status, lastSeenAt])
+  @@map("v2_external_store_candidates")
+}
+
+model V2SyncJob {
+  id              String                 @id @default(cuid())
+  connectionId    String                 @map("connection_id")
+  connection      V2DataSourceConnection @relation(fields: [connectionId], references: [id])
+  module          String
+  businessStartAt DateTime               @map("business_start_at")
+  businessEndAt   DateTime               @map("business_end_at")
+  status          V2SyncJobStatus        @default(PENDING)
+  attemptCount    Int                    @default(0) @map("attempt_count")
+  ingestBatchId   String?                @map("ingest_batch_id")
+  errorReason     String?                @map("error_reason") @db.Text
+  startedAt       DateTime?              @map("started_at")
+  finishedAt      DateTime?              @map("finished_at")
+  createdAt       DateTime               @default(now()) @map("created_at")
+  updatedAt       DateTime               @updatedAt @map("updated_at")
+  createdBy       String?                @map("created_by")
+
+  @@index([connectionId, status, createdAt])
+  @@index([module, businessStartAt, businessEndAt])
+  @@map("v2_sync_jobs")
+}
+
+model V2RawRecord {
+  id              String            @id @default(cuid())
+  batchId         String            @map("batch_id")
+  batch           V2IngestBatch     @relation(fields: [batchId], references: [id])
+  sourceSystem    String            @map("source_system") @db.VarChar(64)
+  sourceModule    String            @map("source_module") @db.VarChar(64)
+  externalStoreId String            @map("external_store_id") @db.VarChar(64)
+  sourceRecordId  String?           @map("source_record_id")
+  stableKey       String            @map("stable_key") @db.VarChar(128)
+  payload         Json
+  payloadHash     String            @map("payload_hash") @db.VarChar(64)
+  occurredAt      DateTime?         @map("occurred_at")
+  settledAt       DateTime?         @map("settled_at")
+  sourceUpdatedAt DateTime?         @map("source_updated_at")
+  fetchedAt       DateTime          @map("fetched_at")
+  events          V2BusinessEvent[]
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  @@unique([sourceSystem, sourceModule, externalStoreId, stableKey, payloadHash])
+  @@index([batchId])
+  @@index([externalStoreId, occurredAt])
+  @@map("v2_raw_records")
+}
+
+model V2RuleDefinition {
+  id          String            @id @default(cuid())
+  code        String
+  version     Int
+  name        String
+  description String            @db.Text
+  config      Json?
+  enabled     Boolean           @default(true)
+  events      V2BusinessEvent[]
+  facts       V2MetricFact[]
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@unique([code, version])
+  @@map("v2_rule_definitions")
+}
+
+model V2BusinessEvent {
+  id              String           @id @default(cuid())
+  rawRecordId     String           @map("raw_record_id")
+  rawRecord       V2RawRecord      @relation(fields: [rawRecordId], references: [id])
+  ruleId          String           @map("rule_id")
+  rule            V2RuleDefinition @relation(fields: [ruleId], references: [id])
+  externalStoreId String           @map("external_store_id")
+  eventType       V2EventType      @map("event_type")
+  businessKey     String           @map("business_key") @db.VarChar(191)
+  amount          Decimal          @db.Decimal(14, 2)
+  decision        V2Decision
+  decisionReason  String           @map("decision_reason") @db.VarChar(500)
+  occurredAt      DateTime         @map("occurred_at")
+  settledAt       DateTime?        @map("settled_at")
+  outgoingLinks   V2EventLink[]    @relation("V2LinkFrom")
+  incomingLinks   V2EventLink[]    @relation("V2LinkTo")
+  facts           V2MetricFact[]
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  @@unique([ruleId, rawRecordId, eventType, businessKey])
+  @@index([externalStoreId, occurredAt, decision])
+  @@map("v2_business_events")
+}
+
+model V2EventLink {
+  id          String          @id @default(cuid())
+  fromEventId String          @map("from_event_id")
+  fromEvent   V2BusinessEvent @relation("V2LinkFrom", fields: [fromEventId], references: [id])
+  toEventId   String          @map("to_event_id")
+  toEvent     V2BusinessEvent @relation("V2LinkTo", fields: [toEventId], references: [id])
+  linkType    V2LinkType      @map("link_type")
+  ruleCode    String          @map("rule_code")
+  reason      String          @db.VarChar(500)
+  createdAt   DateTime        @default(now()) @map("created_at")
+
+  @@unique([fromEventId, toEventId, linkType])
+  @@index([toEventId])
+  @@map("v2_event_links")
+}
+
+model V2ReconciliationRun {
+  id                  String                 @id @default(cuid())
+  externalStoreId     String                 @map("external_store_id")
+  businessStartAt     DateTime               @map("business_start_at")
+  businessEndAt       DateTime               @map("business_end_at")
+  ruleSetVersion      String                 @map("rule_set_version")
+  authoritativeAmount Decimal?               @map("authoritative_amount") @db.Decimal(14, 2)
+  includedAmount      Decimal                @map("included_amount") @db.Decimal(14, 2)
+  excludedAmount      Decimal                @map("excluded_amount") @db.Decimal(14, 2)
+  differenceAmount    Decimal?               @map("difference_amount") @db.Decimal(14, 2)
+  status              V2ReconciliationStatus
+  facts               V2MetricFact[]
+  items               V2ReconciliationItem[]
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+
+  @@index([externalStoreId, businessStartAt, businessEndAt])
+  @@map("v2_reconciliation_runs")
+}
+
+model V2MetricFact {
+  id               String              @id @default(cuid())
+  reconciliationId String              @map("reconciliation_id")
+  reconciliation   V2ReconciliationRun @relation(fields: [reconciliationId], references: [id])
+  eventId          String              @map("event_id")
+  event            V2BusinessEvent     @relation(fields: [eventId], references: [id])
+  ruleId           String              @map("rule_id")
+  rule             V2RuleDefinition    @relation(fields: [ruleId], references: [id])
+  metricCode       String              @map("metric_code")
+  amount           Decimal             @db.Decimal(14, 2)
+  createdAt        DateTime            @default(now()) @map("created_at")
+
+  @@unique([reconciliationId, eventId, metricCode])
+  @@index([metricCode])
+  @@map("v2_metric_facts")
+}
+
+model V2ReconciliationItem {
+  id               String              @id @default(cuid())
+  reconciliationId String              @map("reconciliation_id")
+  reconciliation   V2ReconciliationRun @relation(fields: [reconciliationId], references: [id])
+  sourceModule     String              @map("source_module")
+  eventType        V2EventType         @map("event_type")
+  decision         V2Decision
+  ruleCode         String              @map("rule_code")
+  reason           String              @db.VarChar(500)
+  recordCount      Int                 @map("record_count")
+  amount           Decimal             @db.Decimal(14, 2)
+  createdAt        DateTime            @default(now()) @map("created_at")
+
+  @@index([reconciliationId, decision])
+  @@map("v2_reconciliation_items")
 }
 
 model ScoreItem {
@@ -485,4 +2247,299 @@ model PositionPermission {
 
   @@id([positionId, permissionId])
   @@map("position_permissions")
+}
+
+model V2AttendanceTerminal {
+  id         String    @id @default(cuid())
+  storeId    String    @map("store_id")
+  store      V2Store   @relation(fields: [storeId], references: [id])
+  secretHash String    @unique @map("secret_hash") @db.Char(64)
+  createdAt  DateTime  @default(now()) @map("created_at")
+  createdBy  String    @map("created_by")
+  revokedAt  DateTime? @map("revoked_at")
+  revokedBy  String?   @map("revoked_by")
+
+  @@index([storeId])
+  @@map("v2_attendance_terminals")
+}
+
+model V2AttendanceWifiNetwork {
+  id        String              @id @default(cuid())
+  storeId   String              @map("store_id")
+  store     V2Store             @relation(fields: [storeId], references: [id])
+  bssid     String              @db.Char(17)
+  label     String?             @db.VarChar(100)
+  enabled   Boolean             @default(true)
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+  createdBy String              @map("created_by")
+  updatedBy String              @map("updated_by")
+  deletedAt DateTime?           @map("deleted_at")
+  punches   V2AttendancePunch[]
+
+  @@unique([storeId, bssid])
+  @@index([bssid, enabled, deletedAt])
+  @@map("v2_attendance_wifi_networks")
+}
+
+model V2AttendanceWechatBinding {
+  accountId String    @id @map("account_id")
+  account   V2Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  subject   String    @unique @db.Char(64)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("v2_attendance_wechat_bindings")
+}
+
+model V2AttendancePunch {
+  id            String                   @id @default(cuid())
+  assignmentId  String                   @map("assignment_id")
+  assignment    V2ScheduleAssignment     @relation(fields: [assignmentId], references: [id])
+  kind          V2AttendancePunchKind    @default(IN)
+  terminalId    String?                  @map("terminal_id")
+  wifiNetworkId String?                  @map("wifi_network_id")
+  wifiNetwork   V2AttendanceWifiNetwork? @relation(fields: [wifiNetworkId], references: [id])
+  storeId       String                   @map("store_id")
+  employeeId    String                   @map("employee_id")
+  workDate      DateTime                 @map("work_date") @db.Date
+  punchedAt     DateTime                 @default(now()) @map("punched_at")
+
+  @@unique([assignmentId, kind], map: "v2_attendance_punch_assignment_kind_key")
+  @@index([storeId, workDate])
+  @@index([wifiNetworkId])
+  @@map("v2_attendance_punches")
+}
+
+enum V2AttendancePunchKind {
+  IN
+  OUT
+}
+
+enum V2AttendanceCorrectionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model V2AttendanceCorrection {
+  id            String                       @id @default(cuid())
+  assignmentId  String                       @map("assignment_id")
+  assignment    V2ScheduleAssignment         @relation(fields: [assignmentId], references: [id])
+  kind          V2AttendancePunchKind
+  pendingKey    String?                      @unique @map("pending_key")
+  requestedTime DateTime                     @map("requested_time")
+  reason        String                       @db.Text
+  status        V2AttendanceCorrectionStatus @default(PENDING)
+  createdAt     DateTime                     @default(now()) @map("created_at")
+  reviewedAt    DateTime?                    @map("reviewed_at")
+  reviewedBy    String?                      @map("reviewed_by")
+  reviewNote    String?                      @map("review_note") @db.Text
+
+  @@index([assignmentId, kind, createdAt])
+  @@index([status, createdAt])
+  @@map("v2_attendance_corrections")
+}
+
+enum V2OperationalTaskStatus {
+  PENDING
+  CLAIMED
+  SUBMITTED
+  DONE
+}
+
+model V2OperationalTask {
+  checklistIssues    Json?                           @map("checklist_issues")
+  sourceIssue        Json?                           @map("source_issue")
+  ccRecipients       Json?                           @map("cc_recipients")
+  notifications      V2OperationalTaskNotification[]
+  checklist          Json?
+  checklistConfirmed Boolean                         @default(false) @map("checklist_confirmed")
+  extensions         V2OperationalTaskExtension[]
+  scheduleId         String?                         @map("schedule_id")
+  scheduledFor       DateTime?                       @map("scheduled_for")
+  schedule           V2OperationalTaskSchedule?      @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
+  evidence           V2OperationalTaskEvidence[]
+  sourceTaskId       String?                         @map("source_task_id")
+  sourceTask         V2OperationalTask?              @relation("V2OperationalTaskRectifications", fields: [sourceTaskId], references: [id], onDelete: Restrict)
+  rectifications     V2OperationalTask[]             @relation("V2OperationalTaskRectifications")
+  reopenHistory      V2OperationalTaskReopen[]
+  originalDueAt      DateTime?                       @map("original_due_at")
+  id                 String                          @id @default(cuid())
+  batchId            String                          @map("batch_id")
+  storeId            String                          @map("store_id")
+  store              V2Store                         @relation(fields: [storeId], references: [id])
+  targetKey          String                          @map("target_key")
+  targetName         String                          @map("target_name")
+  title              String                          @db.VarChar(120)
+  description        String                          @db.Text
+  dueAt              DateTime                        @map("due_at")
+  status             V2OperationalTaskStatus         @default(PENDING)
+  createdBy          String                          @map("created_by")
+  createdAt          DateTime                        @default(now()) @map("created_at")
+  claimerId          String?                         @map("claimer_id")
+  claimerName        String?                         @map("claimer_name")
+  claimedAt          DateTime?                       @map("claimed_at")
+  submission         String?                         @db.Text
+  submittedAt        DateTime?                       @map("submitted_at")
+  reviewedBy         String?                         @map("reviewed_by")
+  reviewedAt         DateTime?                       @map("reviewed_at")
+
+  @@unique([createdBy, batchId, storeId, targetKey], map: "v2_operational_tasks_dispatch_key")
+  @@unique([scheduleId, scheduledFor], map: "v2_operational_task_schedule_slot_key")
+  @@index([storeId, targetKey, dueAt], map: "v2_operational_tasks_target_idx")
+  @@index([createdAt])
+  @@index([sourceTaskId])
+  @@map("v2_operational_tasks")
+}
+
+model V2OperationalTaskReopen {
+  checklistIssues     Json?                         @map("checklist_issues")
+  action              V2OperationalTaskReopenAction @default(RETURN)
+  previousClaimedAt   DateTime?                     @map("previous_claimed_at")
+  checklistConfirmed  Boolean                       @default(false) @map("checklist_confirmed")
+  evidence            V2OperationalTaskEvidence[]
+  id                  String                        @id @default(cuid())
+  taskId              String                        @map("task_id")
+  task                V2OperationalTask             @relation(fields: [taskId], references: [id])
+  actorId             String                        @map("actor_id")
+  reason              String                        @db.Text
+  previousClaimerId   String?                       @map("previous_claimer_id")
+  previousClaimerName String?                       @map("previous_claimer_name")
+  previousSubmission  String?                       @map("previous_submission") @db.Text
+  previousSubmittedAt DateTime?                     @map("previous_submitted_at")
+  previousDueAt       DateTime                      @map("previous_due_at")
+  newDueAt            DateTime                      @map("new_due_at")
+  createdAt           DateTime                      @default(now()) @map("created_at")
+
+  @@index([taskId, createdAt])
+  @@map("v2_operational_task_reopens")
+}
+
+model V2OperationalTaskEvidence {
+  id        String                   @id @default(cuid())
+  taskId    String                   @map("task_id")
+  task      V2OperationalTask        @relation(fields: [taskId], references: [id])
+  reopenId  String?                  @map("reopen_id")
+  reopen    V2OperationalTaskReopen? @relation(fields: [reopenId], references: [id], onDelete: Restrict)
+  image     Bytes                    @db.MediumBlob
+  createdAt DateTime                 @default(now()) @map("created_at")
+
+  @@index([taskId, reopenId])
+  @@index([reopenId])
+  @@map("v2_operational_task_evidence")
+}
+
+enum V2OperationalTaskCadence {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+model V2OperationalTaskSchedule {
+  ccRecipients Json?                    @map("cc_recipients")
+  checklist    Json?
+  id           String                   @id @default(cuid())
+  storeId      String                   @map("store_id")
+  store        V2Store                  @relation(fields: [storeId], references: [id])
+  targetKey    String                   @map("target_key")
+  targetName   String                   @map("target_name")
+  title        String                   @db.VarChar(120)
+  description  String                   @db.Text
+  cadence      V2OperationalTaskCadence
+  firstRunAt   DateTime                 @map("first_run_at")
+  nextRunAt    DateTime                 @map("next_run_at")
+  dueHours     Int                      @map("due_hours")
+  enabled      Boolean                  @default(true)
+  pauseReason  String?                  @map("pause_reason") @db.VarChar(191)
+  createdBy    String                   @map("created_by")
+  scheduledBy  String                   @map("scheduled_by")
+  createdAt    DateTime                 @default(now()) @map("created_at")
+  updatedAt    DateTime                 @updatedAt @map("updated_at")
+  tasks        V2OperationalTask[]
+
+  @@index([enabled, nextRunAt])
+  @@index([storeId, createdAt])
+  @@map("v2_operational_task_schedules")
+}
+
+enum V2OperationalTaskExtensionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model V2OperationalTaskExtension {
+  id                  String                           @id @default(cuid())
+  taskId              String                           @map("task_id")
+  task                V2OperationalTask                @relation(fields: [taskId], references: [id])
+  pendingKey          String?                          @unique @map("pending_key")
+  status              V2OperationalTaskExtensionStatus @default(PENDING)
+  reason              String                           @db.Text
+  requestedBy         String                           @map("requested_by")
+  previousDueAt       DateTime                         @map("previous_due_at")
+  previousClaimerId   String?                          @map("previous_claimer_id")
+  previousClaimerName String?                          @map("previous_claimer_name")
+  createdAt           DateTime                         @default(now()) @map("created_at")
+  newDueAt            DateTime?                        @map("new_due_at")
+  reviewedBy          String?                          @map("reviewed_by")
+  reviewedAt          DateTime?                        @map("reviewed_at")
+  reviewNote          String?                          @map("review_note") @db.Text
+
+  @@index([taskId, createdAt])
+  @@index([status, createdAt])
+  @@map("v2_operational_task_extensions")
+}
+
+enum V2OperationalTaskNotificationKind {
+  RELEASED
+  CC
+  SUBMITTED
+  COMPLETED
+  RETURNED
+}
+
+model V2OperationalTaskNotification {
+  id          String                            @id @default(cuid())
+  taskId      String                            @map("task_id")
+  task        V2OperationalTask                 @relation(fields: [taskId], references: [id])
+  recipientId String                            @map("recipient_id")
+  kind        V2OperationalTaskNotificationKind
+  reason      String?                           @db.Text
+  createdAt   DateTime                          @default(now()) @map("created_at")
+  readAt      DateTime?                         @map("read_at")
+
+  @@index([recipientId, readAt, createdAt], map: "v2_task_notifications_recipient_idx")
+  @@index([taskId])
+  @@map("v2_operational_task_notifications")
+}
+
+enum V2OperationalTaskReopenAction {
+  RETURN
+  RELEASE
+}
+
+model V2RolePermissionAudit {
+  id          String   @id @default(cuid())
+  roleId      String   @map("role_id")
+  actorId     String   @map("actor_id")
+  beforeCodes Json     @map("before_codes")
+  afterCodes  Json     @map("after_codes")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([roleId, createdAt])
+  @@map("v2_role_permission_audits")
+}
+
+model V2AuthorizationAudit {
+  id          String   @id @default(cuid())
+  subject     String
+  subjectId   String   @map("subject_id")
+  subjectName String   @map("subject_name")
+  actorId     String   @map("actor_id")
+  before      Json?
+  after       Json
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("v2_authorization_audits")
 }

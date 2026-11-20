@@ -11,3 +11,8 @@ export class LoginDto {
   @MinLength(6)
   password!: string;
 }
+
+export class ChangePasswordDto {
+  @ApiProperty() @IsString() currentPassword!: string;
+  @ApiProperty() @IsString() @MinLength(8) newPassword!: string;
+}

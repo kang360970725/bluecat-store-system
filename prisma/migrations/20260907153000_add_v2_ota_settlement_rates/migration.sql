@@ -1,0 +1,3 @@
+ALTER TABLE `v2_ota_products`
+  ADD COLUMN `settlement_rate` DECIMAL(8,6) NOT NULL DEFAULT 1,
+  ADD COLUMN `fee_rate` DECIMAL(8,6) NOT NULL DEFAULT 0;

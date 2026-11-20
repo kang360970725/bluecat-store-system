@@ -1,0 +1,1 @@
+ALTER TABLE `v2_stores` ADD COLUMN `short_name` VARCHAR(191) NULL;

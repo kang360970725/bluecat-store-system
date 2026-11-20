@@ -1,7 +1,7 @@
 import type { ApiResponse } from '@bluecat/shared';
 import { useAuthStore } from '@/stores/auth';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 export async function request<T>(
   path: string,
@@ -10,7 +10,7 @@ export async function request<T>(
   const auth = useAuthStore();
   const headers = new Headers(options.headers);
 
-  if (!headers.has('Content-Type')) {
+  if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
 
@@ -23,7 +23,19 @@ export async function request<T>(
     headers
   });
 
-  const body = (await response.json()) as ApiResponse<T>;
+  const raw = await response.text();
+  let body: ApiResponse<T> | null = null;
+  if (raw) {
+    try {
+      body = JSON.parse(raw) as ApiResponse<T>;
+    } catch {
+      throw new Error(
+        response.ok
+          ? '服务器返回了无法识别的数据'
+          : `服务请求失败（HTTP ${response.status}）`
+      );
+    }
+  }
 
   if (response.status === 401 && path !== '/auth/login') {
     auth.clearSession();
@@ -35,8 +47,8 @@ export async function request<T>(
     throw new Error('登录已失效，请重新登录');
   }
 
-  if (!response.ok || body.code !== 0) {
-    throw new Error(body.message || '请求失败');
+  if (!response.ok || !body || body.code !== 0) {
+    throw new Error(body?.message || `服务请求失败（HTTP ${response.status}）`);
   }
 
   return body.data;

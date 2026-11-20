@@ -1,0 +1,23 @@
+CREATE TABLE `v2_store_cost_corrections` (
+  `id` VARCHAR(191) NOT NULL,
+  `store_id` VARCHAR(191) NOT NULL,
+  `source_config_id` VARCHAR(191) NULL,
+  `cost_month` DATE NOT NULL,
+  `code` VARCHAR(191) NOT NULL,
+  `name` VARCHAR(191) NOT NULL,
+  `category` VARCHAR(191) NOT NULL,
+  `method` ENUM('FIXED', 'RATE', 'FORMULA') NOT NULL,
+  `frequency` ENUM('MONTHLY', 'QUARTERLY', 'YEARLY', 'ONE_TIME') NOT NULL,
+  `fixed_amount` DECIMAL(14,2) NULL,
+  `rate` DECIMAL(9,6) NULL,
+  `formula` TEXT NULL,
+  `reason` VARCHAR(500) NOT NULL,
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updated_at` DATETIME(3) NOT NULL,
+  `created_by` VARCHAR(191) NULL,
+  `updated_by` VARCHAR(191) NULL,
+  UNIQUE INDEX `v2_store_cost_corrections_store_id_code_cost_month_key`(`store_id`, `code`, `cost_month`),
+  INDEX `v2_store_cost_corrections_store_id_cost_month_idx`(`store_id`, `cost_month`),
+  PRIMARY KEY (`id`),
+  CONSTRAINT `v2_store_cost_corrections_store_id_fkey` FOREIGN KEY (`store_id`) REFERENCES `v2_stores`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

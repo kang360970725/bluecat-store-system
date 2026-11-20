@@ -1,0 +1,4 @@
+{
+  "pages": ["pages/attendance/index"],
+  "window": { "navigationBarTitleText": "员工工作台" }
+}
