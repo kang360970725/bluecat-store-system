@@ -36,3 +36,4 @@ ALTER TABLE `v2_attendance_punches` ADD CONSTRAINT `v2_attendance_punches_assign
 
 -- AddForeignKey
 ALTER TABLE `v2_attendance_corrections` ADD CONSTRAINT `v2_attendance_corrections_assignment_id_fkey` FOREIGN KEY (`assignment_id`) REFERENCES `v2_schedule_assignments`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+

@@ -34,6 +34,7 @@ export type CurrentUser = {
   roles: string[];
   permissions: string[];
   mustChangePassword?: boolean;
+  wechatBoundAt?: string;
 };
 
 export type DataScope = 'ALL' | 'ORG' | 'STORE' | 'SELF' | 'CUSTOM_STORES';

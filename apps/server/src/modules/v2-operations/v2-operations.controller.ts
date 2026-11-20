@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
   UseGuards
 } from '@nestjs/common';
@@ -18,13 +19,17 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { PermissionGuard } from '../../common/guards/permission.guard';
 import {
   CreateV2OperatingTargetDto,
+  ApplyV2ScheduleCycleDto,
   CreateV2ScheduleAssignmentDto,
   CreateV2SchedulePeriodDto,
+  UpdateV2ScheduleAssignmentDto,
   CreateV2ScorePlanDto,
   CreateV2ShiftTemplateDto,
   GenerateV2TargetAllocationsDto,
   MatchV2ExternalStoreCandidateDto,
   SaveV2WecomWebhookDto,
+  SaveV2StoreShiftDto,
+  SaveV2ScheduleSuccessionDto,
   UpsertV2DataSourceDto
 } from './dto';
 import { V2OperationsService } from './v2-operations.service';
@@ -47,8 +52,10 @@ export class V2OperationsController {
     if (!user.roles.includes('super_admin'))
       throw new ForbiddenException('仅超级管理员可以执行此操作');
   }
-  @Get('overview') @RequirePermissions('store:view') overview() {
-    return this.service.overview();
+  @Get('overview') @RequirePermissions('store:view') overview(
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.overview(user);
   }
   @Post('shift-templates') @RequirePermissions('schedule:update') createShift(
     @Body() dto: CreateV2ShiftTemplateDto
@@ -66,15 +73,64 @@ export class V2OperationsController {
   ) {
     return this.service.createSchedulePeriod(dto, user);
   }
-  @Get('schedules/:id') @RequirePermissions('employee:view') schedule(
-    @Param('id') id: string
+  @Get('stores/:storeId/schedules')
+  @RequirePermissions('schedule:view')
+  storeSchedules(
+    @Param('storeId') storeId: string,
+    @Query('month') month: string | undefined,
+    @CurrentUserInfo() user: CurrentUser
   ) {
-    return this.service.scheduleDetail(id);
+    return this.service.listStoreSchedules(storeId, month, user);
+  }
+  @Put('stores/:storeId/shifts')
+  @RequirePermissions('schedule:update')
+  saveStoreShift(
+    @Param('storeId') storeId: string,
+    @Body() dto: SaveV2StoreShiftDto,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.saveStoreShift(storeId, dto, user);
+  }
+  @Delete('stores/:storeId/shifts/:shiftId')
+  @RequirePermissions('schedule:update')
+  disableStoreShift(
+    @Param('storeId') storeId: string,
+    @Param('shiftId') shiftId: string,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.disableStoreShift(storeId, shiftId, user);
+  }
+  @Put('stores/:storeId/schedule-successions')
+  @RequirePermissions('schedule:update')
+  saveScheduleSuccession(
+    @Param('storeId') storeId: string,
+    @Body() dto: SaveV2ScheduleSuccessionDto,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.saveScheduleSuccession(storeId, dto, user);
+  }
+  @Delete('stores/:storeId/schedule-successions/:id')
+  @RequirePermissions('schedule:update')
+  deleteScheduleSuccession(
+    @Param('storeId') storeId: string,
+    @Param('id') id: string,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.deleteScheduleSuccession(storeId, id, user);
+  }
+  @Get('schedules/:id') @RequirePermissions('schedule:view') schedule(
+    @Param('id') id: string,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.scheduleDetail(id, user);
   }
   @Get('stores/:storeId/schedule-options')
-  @RequirePermissions('employee:view')
-  scheduleOptions(@Param('storeId') storeId: string) {
-    return this.service.storeScheduleOptions(storeId);
+  @RequirePermissions('schedule:view')
+  scheduleOptions(
+    @Param('storeId') storeId: string,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.storeScheduleOptions(storeId, user);
   }
   @Post('schedule-assignments')
   @RequirePermissions('schedule:update')
@@ -86,18 +142,49 @@ export class V2OperationsController {
   }
   @Delete('schedule-assignments/:id')
   @RequirePermissions('schedule:update')
-  deleteAssignment(@Param('id') id: string) {
-    return this.service.deleteAssignment(id);
+  deleteAssignment(
+    @Param('id') id: string,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.deleteAssignment(id, user);
+  }
+  @Put('schedule-assignments/:id')
+  @RequirePermissions('schedule:update')
+  updateAssignment(
+    @Param('id') id: string,
+    @Body() dto: UpdateV2ScheduleAssignmentDto,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.updateAssignment(id, dto, user);
+  }
+  @Post('schedules/:id/apply-cycle')
+  @RequirePermissions('schedule:update')
+  applyScheduleCycle(
+    @Param('id') id: string,
+    @Body() dto: ApplyV2ScheduleCycleDto,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.applyScheduleCycle(id, dto, user);
+  }
+  @Post('schedules/:id/copy-previous')
+  @RequirePermissions('schedule:update')
+  copyPreviousSchedule(
+    @Param('id') id: string,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    return this.service.copyPreviousSchedule(id, user);
   }
   @Post('schedules/:id/publish') @RequirePermissions('schedule:update') publish(
-    @Param('id') id: string
+    @Param('id') id: string,
+    @CurrentUserInfo() user: CurrentUser
   ) {
-    return this.service.publishSchedule(id);
+    return this.service.publishSchedule(id, user);
   }
   @Post('schedules/:id/lock') @RequirePermissions('schedule:update') lock(
-    @Param('id') id: string
+    @Param('id') id: string,
+    @CurrentUserInfo() user: CurrentUser
   ) {
-    return this.service.lockSchedule(id);
+    return this.service.lockSchedule(id, user);
   }
   @Post('targets') @RequirePermissions('performance:update') createTarget(
     @Body() dto: CreateV2OperatingTargetDto,
@@ -216,6 +303,14 @@ export class V2OperationsController {
   ) {
     return this.service.storePerformance(storeId, month);
   }
+  @Get('store-center-ranking')
+  storeCenterRanking(
+    @CurrentUserInfo() user: CurrentUser,
+    @Query('month') month?: string
+  ) {
+    return this.service.storeCenterRanking(user, month);
+  }
+
   @Get('store-performance-ranking')
   @RequirePermissions('performance:view')
   storePerformanceRanking(

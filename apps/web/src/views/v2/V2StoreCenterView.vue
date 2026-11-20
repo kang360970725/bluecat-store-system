@@ -11,7 +11,7 @@
       <div class="summary-heading">
         <div>
           <span>经营总览</span>
-          <h2>全门店总业绩</h2>
+          <h2>{{ summaryTitle }}</h2>
         </div>
         <div class="month-tools">
           <n-button-group
@@ -35,18 +35,18 @@
       <div class="summary-metrics">
         <div>
           <span>{{ metricMonth }}总目标</span
-          ><strong>¥{{ money(allStoreTarget) }}</strong
+          ><strong>¥{{ money(summaryTarget) }}</strong
           ><small>{{ configuredTargetCount }} 家门店已设置目标</small>
         </div>
         <div class="primary-summary">
           <span>{{ metricMonth }}总收入</span
-          ><strong>¥{{ money(allStoreRevenue) }}</strong
-          ><small>全部门店收入合计</small>
+          ><strong>¥{{ money(summaryRevenue) }}</strong
+          ><small>{{ summaryStoreLabel }}收入合计</small>
         </div>
         <div>
           <span>{{ metricMonth }}预计收入</span
           ><strong>{{
-            forecastAvailable ? `¥${money(allStoreEstimatedRevenue)}` : '—'
+            forecastAvailable ? `¥${money(summaryEstimatedRevenue)}` : '—'
           }}</strong
           ><small>{{
             isCurrentMonth ? '按截至昨日的日均收入推算' : '历史月份按整月统计'
@@ -55,10 +55,10 @@
         <div>
           <span>预计完成率</span
           ><strong>{{
-            !allStoreTarget
+            !summaryTarget
               ? '未设目标'
               : forecastAvailable
-                ? percent(allStoreEstimatedCompletionRate)
+                ? percent(summaryEstimatedCompletionRate)
                 : '—'
           }}</strong
           ><small>预计收入 ÷ 总目标</small>
@@ -70,13 +70,13 @@
         </div>
         <div>
           <span>{{ metricMonth }}利润目标</span
-          ><strong>¥{{ money(allStoreProfitTarget) }}</strong
-          ><small>全部门店利润目标合计</small>
+          ><strong>¥{{ money(summaryProfitTarget) }}</strong
+          ><small>{{ summaryStoreLabel }}利润目标合计</small>
         </div>
         <div>
           <span>{{ metricMonth }}总利润</span
-          ><strong :class="allStoreProfit >= 0 ? 'positive' : 'negative'"
-            >¥{{ money(allStoreProfit) }}</strong
+          ><strong :class="summaryProfit >= 0 ? 'positive' : 'negative'"
+            >¥{{ money(summaryProfit) }}</strong
           ><small>营业额 − 成本</small>
         </div>
         <div class="forecast-summary">
@@ -94,10 +94,10 @@
         <div>
           <span>{{ metricMonth }}利润预计完成率</span
           ><strong>{{
-            !allStoreProfitTarget
+            !summaryProfitTarget
               ? '未设目标'
               : forecastAvailable
-                ? percent(allStoreEstimatedProfitCompletionRate)
+                ? percent(summaryEstimatedProfitCompletionRate)
                 : '—'
           }}</strong
           ><small>预计利润总和 ÷ 利润目标总和</small>
@@ -109,7 +109,7 @@
         </div>
       </div>
       <div class="store-counts">
-        <span>全部门店 {{ stores.length }}</span
+        <span>{{ summaryStoreLabel }} {{ summaryStores.length }}</span
         ><span>营业中 {{ operatingCount }}</span>
       </div>
     </n-card>
@@ -145,24 +145,15 @@
 import { computed, h, onMounted, ref } from 'vue';
 import { NDataTable, NButton, NProgress, NTag, type DataTableColumns } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
-import {
-  getV2MasterDataOverview,
-  type V2MasterDataOverview
-} from '@/api/v2-master-data';
-import {
-  getV2StorePerformanceRanking,
-  type V2StorePerformanceRanking
-} from '@/api/v2-operations';
+import { getV2StoreCenterRanking, type V2StoreCenterRanking } from '@/api/v2-operations';
 import { storeDisplayName } from '@/utils/store-display';
 import MonthGridPicker from '@/components/MonthGridPicker.vue';
 
-type StoreRow = V2MasterDataOverview['stores'][number] &
-  V2StorePerformanceRanking['items'][number];
+type StoreRow = V2StoreCenterRanking['items'][number];
 const router = useRouter();
 const route = useRoute();
 const loading = ref(false);
-const overview = ref<V2MasterDataOverview | null>(null);
-const ranking = ref<V2StorePerformanceRanking | null>(null);
+const ranking = ref<V2StoreCenterRanking | null>(null);
 const monthPanelOpen = ref(false);
 const currentMonth = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai',
@@ -186,30 +177,7 @@ const forecastAvailable = computed(() => (ranking.value?.elapsedDays ?? 0) > 0);
 const metricMonth = computed(() =>
   isCurrentMonth.value ? '本月' : monthLabel.value
 );
-const rankingMap = computed(
-  () => new Map(ranking.value?.items.map((item) => [item.storeId, item]) ?? [])
-);
-const stores = computed<StoreRow[]>(() =>
-  (overview.value?.stores ?? [])
-    .map((item) => ({
-      ...item,
-      ...(rankingMap.value.get(item.id) ?? {
-        storeId: item.id,
-        monthTotal: 0,
-        estimatedRevenue: 0,
-        target: 0,
-        completionRate: 0,
-        estimatedCompletionRate: 0,
-        profitTarget: 0,
-        actualProfit: 0,
-        profitCompletionRate: 0,
-        estimatedProfit: 0,
-        estimatedProfitCompletionRate: 0,
-        rank: 0
-      })
-    }))
-    .sort((a, b) => a.rank - b.rank)
-);
+const stores = computed(() => ranking.value?.items ?? []);
 const visibleStores = computed<StoreRow[]>(() =>
   stores.value
     .filter((item) => item.status !== 'CLOSED')
@@ -221,51 +189,64 @@ const visibleStores = computed<StoreRow[]>(() =>
     )
     .map((item, index) => ({ ...item, rank: index + 1 }))
 );
+const summaryStoreLabel = computed(() => {
+  if (ranking.value?.summaryScope === 'all') return '全部门店';
+  return ranking.value?.summaryScope === 'managed' ? '管理门店' : '授权门店';
+});
+const summaryStores = computed(() => {
+  const ids = new Set(ranking.value?.summaryStoreIds ?? []);
+  return stores.value.filter(store => ids.has(store.id));
+});
+const summaryTitle = computed(() => {
+  if (ranking.value?.summaryScope === 'all') return '全门店总业绩';
+  if (summaryStores.value.length === 1) return `${storeDisplayName(summaryStores.value[0])}业绩`;
+  return `${summaryStoreLabel.value}总业绩`;
+});
 const operatingCount = computed(
-  () => stores.value.filter((item) => item.status === 'OPERATING').length
+  () => summaryStores.value.filter((item) => item.status === 'OPERATING').length
 );
-const allStoreRevenue = computed(() =>
-  stores.value.reduce((sum, item) => sum + item.monthTotal, 0)
+const summaryRevenue = computed(() =>
+  summaryStores.value.reduce((sum, item) => sum + item.monthTotal, 0)
 );
-const allStoreTarget = computed(() =>
-  stores.value.reduce((sum, item) => sum + Number(item.target || 0), 0)
+const summaryTarget = computed(() =>
+  summaryStores.value.reduce((sum, item) => sum + Number(item.target || 0), 0)
 );
-const allStoreEstimatedRevenue = computed(() =>
-  stores.value.reduce((sum, item) => sum + item.estimatedRevenue, 0)
+const summaryEstimatedRevenue = computed(() =>
+  summaryStores.value.reduce((sum, item) => sum + item.estimatedRevenue, 0)
 );
-const allStoreEstimatedCompletionRate = computed(() =>
-  allStoreTarget.value
-    ? allStoreEstimatedRevenue.value / allStoreTarget.value
+const summaryEstimatedCompletionRate = computed(() =>
+  summaryTarget.value
+    ? summaryEstimatedRevenue.value / summaryTarget.value
     : 0
 );
-const allStoreProfit = computed(() =>
-  stores.value.reduce((sum, item) => sum + item.actualProfit, 0)
+const summaryProfit = computed(() =>
+  summaryStores.value.reduce((sum, item) => sum + item.actualProfit, 0)
 );
-const allStoreEstimatedProfit = computed(() =>
-  stores.value.reduce((sum, item) => sum + item.estimatedProfit, 0)
+const summaryEstimatedProfit = computed(() =>
+  summaryStores.value.reduce((sum, item) => sum + item.estimatedProfit, 0)
 );
 const positiveStoreEstimatedProfit = computed(() =>
-  stores.value
+  summaryStores.value
     .filter((item) => item.estimatedProfit > 0)
     .reduce((sum, item) => sum + item.estimatedProfit, 0)
 );
 const estimatedLossAbsolute = computed(() =>
   Math.abs(
-    stores.value
+    summaryStores.value
       .filter((item) => item.estimatedProfit < 0)
       .reduce((sum, item) => sum + item.estimatedProfit, 0)
   )
 );
-const allStoreProfitTarget = computed(() =>
-  stores.value.reduce((sum, item) => sum + Number(item.profitTarget || 0), 0)
+const summaryProfitTarget = computed(() =>
+  summaryStores.value.reduce((sum, item) => sum + Number(item.profitTarget || 0), 0)
 );
-const allStoreEstimatedProfitCompletionRate = computed(() =>
-  allStoreProfitTarget.value
-    ? allStoreEstimatedProfit.value / allStoreProfitTarget.value
+const summaryEstimatedProfitCompletionRate = computed(() =>
+  summaryProfitTarget.value
+    ? summaryEstimatedProfit.value / summaryProfitTarget.value
     : 0
 );
 const configuredTargetCount = computed(
-  () => stores.value.filter((item) => item.target > 0).length
+  () => summaryStores.value.filter((item) => item.target > 0).length
 );
 const average = (values: number[]) =>
   values.length
@@ -273,14 +254,14 @@ const average = (values: number[]) =>
     : 0;
 const averageCompletionRate = computed(() =>
   average(
-    stores.value
+    summaryStores.value
       .filter((item) => item.target > 0)
       .map((item) => item.completionRate)
   )
 );
 const averageProfitCompletionRate = computed(() =>
   average(
-    stores.value
+    summaryStores.value
       .filter((item) => item.profitTarget !== 0)
       .map((item) => item.profitCompletionRate)
   )
@@ -455,7 +436,7 @@ const columns = computed<DataTableColumns<StoreRow>>(() => [
     width: 120,
     fixed: 'right',
     render: (row) =>
-      h(
+      row.canOpenWorkspace ? h(
         NButton,
         {
           type: 'primary',
@@ -469,7 +450,7 @@ const columns = computed<DataTableColumns<StoreRow>>(() => [
             })
         },
         { default: () => '进入工作台' }
-      )
+      ) : '—'
   }
 ]);
 function storeRowClass(row: StoreRow) {
@@ -495,22 +476,12 @@ function moveMonth(delta: number) {
 async function loadRanking() {
   loading.value = true;
   try {
-    ranking.value = await getV2StorePerformanceRanking(selectedMonthText.value);
+    ranking.value = await getV2StoreCenterRanking(selectedMonthText.value);
   } finally {
     loading.value = false;
   }
 }
-async function load() {
-  loading.value = true;
-  try {
-    [overview.value, ranking.value] = await Promise.all([
-      getV2MasterDataOverview(),
-      getV2StorePerformanceRanking(selectedMonthText.value)
-    ]);
-  } finally {
-    loading.value = false;
-  }
-}
+const load = loadRanking;
 onMounted(() => void load());
 </script>
 

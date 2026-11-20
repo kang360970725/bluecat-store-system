@@ -27,3 +27,4 @@ CREATE TABLE `v2_operational_tasks` (
 
 -- AddForeignKey
 ALTER TABLE `v2_operational_tasks` ADD CONSTRAINT `v2_operational_tasks_store_id_fkey` FOREIGN KEY (`store_id`) REFERENCES `v2_stores`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+

@@ -36,9 +36,6 @@
         <n-form-item label="岗位说明"
           ><n-input v-model:value="form.description" type="textarea"
         /></n-form-item>
-        <n-form-item label="岗位对应角色">
-          <n-select v-model:value="form.roleId" :options="roleOptions" />
-        </n-form-item>
         <n-divider>月薪标准</n-divider>
         <n-grid :cols="2" :x-gap="12">
           <n-form-item-gi label="基础薪资（元/月）"
@@ -81,10 +78,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, reactive, ref } from 'vue';
+import { h, onMounted, reactive, ref } from 'vue';
 import {
   NInputNumber,
-  NSelect,
   NDataTable,
   NButton,
   NTag,
@@ -93,17 +89,14 @@ import {
 } from 'naive-ui';
 import {
   createV2PositionTemplate,
-  getV2AccessControl,
   getV2MasterDataOverview,
   updateV2PositionTemplate,
-  type V2MasterDataOverview,
-  type V2AccessControl
+  type V2MasterDataOverview
 } from '@/api/v2-master-data';
 
 type PositionTemplate = V2MasterDataOverview['positionTemplates'][number];
 const message = useMessage();
 const overview = ref<V2MasterDataOverview | null>(null);
-const access = ref<V2AccessControl | null>(null);
 const modalOpen = ref(false),
   loading = ref(false),
   saving = ref(false);
@@ -113,21 +106,12 @@ const form = reactive({
   description: '',
   monthlyBaseSalary: 0,
   monthlyPerformanceSalary: 0,
-  hourlyRate: 0,
-  roleId: undefined as string | undefined
+  hourlyRate: 0
 });
-const roleOptions = computed(() =>
-  (access.value?.roles ?? [])
-    .filter((role) => role.code !== 'super_admin')
-    .map((role) => ({ label: role.name, value: role.id }))
-);
-const roleName = (roleId?: string | null) =>
-  access.value?.roles.find((role) => role.id === roleId)?.name ?? '未关联';
 const money = (value: string | number) => `¥${Number(value || 0).toFixed(2)}`;
 const columns: DataTableColumns<PositionTemplate> = [
   { title: '岗位', key: 'name', minWidth: 130 },
   { title: '编码', key: 'code', minWidth: 150 },
-  { title: '对应角色', key: 'roleId', render: (row) => roleName(row.roleId) },
   {
     title: '月薪基础',
     key: 'monthlyBaseSalary',
@@ -161,10 +145,7 @@ const columns: DataTableColumns<PositionTemplate> = [
 async function load() {
   loading.value = true;
   try {
-    [overview.value, access.value] = await Promise.all([
-      getV2MasterDataOverview(),
-      getV2AccessControl()
-    ]);
+    overview.value = await getV2MasterDataOverview();
   } finally {
     loading.value = false;
   }
@@ -176,10 +157,7 @@ function openTemplate(row?: PositionTemplate) {
     description: row?.description ?? '',
     monthlyBaseSalary: Number(row?.monthlyBaseSalary ?? 0),
     monthlyPerformanceSalary: Number(row?.monthlyPerformanceSalary ?? 0),
-    hourlyRate: Number(row?.hourlyRate ?? 0),
-    roleId:
-      row?.roleId ??
-      roleOptions.value.find((item) => item.label === '门店员工')?.value
+    hourlyRate: Number(row?.hourlyRate ?? 0)
   });
   modalOpen.value = true;
 }

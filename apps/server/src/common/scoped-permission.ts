@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { readDirectAccountAccess } from './direct-account-access';
 
 const activeAccount = { status: 'ACTIVE', deletedAt: null } as const;
 
@@ -7,6 +8,15 @@ export async function resolveScopedPermission(
   permission: string,
   db: Prisma.TransactionClient
 ): Promise<{ employeeId: string | null; storeIds: string[] | null } | null> {
+  const direct = await readDirectAccountAccess(db, accountId);
+  if (direct && !direct.active) return null;
+  if (direct?.active && !('inherited' in direct)) {
+    if (direct.mustChangePassword) return null;
+    if (!direct.roles.includes('super_admin') && !direct.permissions.includes(permission))
+      return null;
+    if (direct.storeIds?.length === 0) return null;
+    return { employeeId: direct.employeeId, storeIds: direct.storeIds };
+  }
   const grants: Prisma.V2RoleWhereInput = {
     code: { not: 'super_admin' },
     enabled: true,
@@ -83,7 +93,7 @@ export async function resolveScopedPermission(
         (employment) => !employment.costStoreId
       )
     : account.roles.length > 0;
-  if (unrestrictedRole && dataScope === 'ALL_STORES')
+  if (!employeeId && unrestrictedRole && dataScope === 'ALL_STORES')
     return { employeeId, storeIds: null };
 
   const positionStores = [

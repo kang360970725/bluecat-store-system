@@ -151,8 +151,17 @@ type StoreView = {
   dataSource: { sourceSystem: string; externalStoreId: string } | null;
 };
 
+const analyticsCacheTtlMs = 30 * 60 * 1000;
+const analyticsCacheLimit = 64;
+
 @Injectable()
 export class V2UsageAnalyticsService {
+  private readonly analyticsCache = new Map<
+    string,
+    { value: V2UsageAnalytics; expiresAt: number }
+  >();
+  private readonly pendingAnalytics = new Map<string, Promise<V2UsageAnalytics>>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService
@@ -352,6 +361,41 @@ export class V2UsageAnalyticsService {
     start: string,
     end: string,
     summaryOnly = false
+  ) {
+    const key = JSON.stringify([externalStoreId, start, end, summaryOnly]);
+    const cached = this.analyticsCache.get(key);
+    if (cached) {
+      this.analyticsCache.delete(key);
+      if (cached.expiresAt > Date.now()) {
+        this.analyticsCache.set(key, cached);
+        return cached.value;
+      }
+    }
+    const pending = this.pendingAnalytics.get(key);
+    if (pending) return pending;
+
+    const request = this.loadAnalytics(externalStoreId, start, end, summaryOnly)
+      .then((value) => {
+        if (this.analyticsCache.size >= analyticsCacheLimit) {
+          const oldest = this.analyticsCache.keys().next().value;
+          if (oldest !== undefined) this.analyticsCache.delete(oldest);
+        }
+        this.analyticsCache.set(key, {
+          value,
+          expiresAt: Date.now() + analyticsCacheTtlMs
+        });
+        return value;
+      })
+      .finally(() => this.pendingAnalytics.delete(key));
+    this.pendingAnalytics.set(key, request);
+    return request;
+  }
+
+  private async loadAnalytics(
+    externalStoreId: string,
+    start: string,
+    end: string,
+    summaryOnly: boolean
   ) {
     const base = this.config
       .get<string>('app.bluecatBridgeBaseUrl')

@@ -86,7 +86,8 @@
 </template>
 
 <script setup lang="ts">
-import { NDrawerContent, NDrawer, NMenu, NSelect } from 'naive-ui';
+import { NDrawerContent, NDrawer, NMenu } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { computed, h, onMounted, ref, watch } from 'vue';
 import {
   breakpointsTailwind,
@@ -130,6 +131,10 @@ const routeMenuMap: Record<string, { key: string; parent?: string }> = {
     key: 'v2-recharge-contest',
     parent: 'business-group'
   },
+  '/v2/attendance-settings': {
+    key: 'v2-attendance-settings',
+    parent: 'system-group'
+  },
   '/v2/operational-tasks': { key: 'v2-operational-tasks' },
   '/v2/operational-tasks/report': { key: 'v2-operational-tasks' },
   '/v2/attendance-records': {
@@ -141,8 +146,8 @@ const routeMenuMap: Record<string, { key: string; parent?: string }> = {
     parent: 'attendance-group'
   },
   '/v2/employees': { key: 'v2-employees', parent: 'people-group' },
-  '/v2/settings/login-users': {
-    key: 'v2-login-users',
+  '/v2/settings/roles': {
+    key: 'v2-roles-permissions',
     parent: 'system-group'
   },
   '/v2/settings/payroll-grades': {
@@ -330,10 +335,19 @@ const menuOptions = computed(() =>
               label: () =>
                 h(
                   RouterLink,
-                  { to: '/v2/settings/login-users' },
-                  { default: () => '账号与角色' }
+                  { to: '/v2/settings/roles' },
+                  { default: () => '角色与权限' }
                 ),
-              key: 'v2-login-users'
+              key: 'v2-roles-permissions'
+            },
+            {
+              label: () =>
+                h(
+                  RouterLink,
+                  { to: '/v2/attendance-settings' },
+                  { default: () => '小程序考勤配置' }
+                ),
+              key: 'v2-attendance-settings'
             }
           ]
         }

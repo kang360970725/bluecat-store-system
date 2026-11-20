@@ -88,7 +88,6 @@ import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
   NTabPane,
   NTabs,
-  NSelect,
   NDataTable,
   NButton,
   NInput,
@@ -96,6 +95,7 @@ import {
   type DataTableColumns,
   useMessage
 } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { bindRechargeSalesperson, getRechargeContestEntries, getRechargeContestLeaderboard, previewRechargeContestPush, pushRechargeContest, syncRechargeContest, updateRechargeContestEntry, type RechargeContestEntries, type RechargeContestLeaderboard } from '@/api/v2-recharge-contest';
 import { useAuthStore } from '@/stores/auth';
 

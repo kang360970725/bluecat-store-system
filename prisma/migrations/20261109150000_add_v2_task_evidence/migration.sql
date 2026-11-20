@@ -16,3 +16,4 @@ ALTER TABLE `v2_operational_task_evidence` ADD CONSTRAINT `v2_operational_task_e
 
 -- AddForeignKey
 ALTER TABLE `v2_operational_task_evidence` ADD CONSTRAINT `v2_operational_task_evidence_reopen_id_fkey` FOREIGN KEY (`reopen_id`) REFERENCES `v2_operational_task_reopens`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+

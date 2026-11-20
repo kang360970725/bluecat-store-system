@@ -1,3 +1,4 @@
+import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import {
   BadRequestException,
   ForbiddenException,
@@ -197,9 +198,14 @@ export class V2MasterDataService {
   ) {
     const account = await tx.v2Account.findUnique({
       where: { employeeId },
-      select: { id: true }
+      select: { id: true, usesAccountRoles: true }
     });
-    if (!account) return;
+    if (!account || account.usesAccountRoles) return;
+    const locked = await tx.v2Account.updateMany({
+      where: { id: account.id, usesAccountRoles: false },
+      data: { updatedBy: userId }
+    });
+    if (!locked.count) return;
     const [storeEmployments, organizationEmployments] = await Promise.all([
       tx.v2Employment.findMany({
         where: { employeeId, endedOn: null, deletedAt: null },
@@ -594,7 +600,14 @@ export class V2MasterDataService {
     });
   }
 
-  listEmployees(storeId?: string, organizationId?: string, user?: CurrentUser) {
+  listEmployees(
+    storeId?: string,
+    organizationId?: string,
+    user?: CurrentUser,
+    allStores = false
+  ) {
+    if (allStores && (storeId || organizationId))
+      throw new BadRequestException('全部门店不能和指定任职范围同时使用');
     if (organizationId && !user?.roles.includes('super_admin'))
       throw new ForbiddenException('无权查看总部职能人员');
     if (
@@ -604,45 +617,34 @@ export class V2MasterDataService {
       !user.accessibleStoreIds.includes(storeId)
     )
       throw new ForbiddenException('无权查看该门店员工');
+
     const allowedStoreIds =
       user && !user.roles.includes('super_admin')
         ? user.accessibleStoreIds
         : undefined;
     const scopedIds = storeId ? [storeId] : allowedStoreIds;
+    const activeEmployment = { endedOn: null, deletedAt: null };
+    const openStore = { status: { not: 'CLOSED' as const }, deletedAt: null };
+    const scopedStoreEmployment = {
+      ...activeEmployment,
+      ...(scopedIds ? { storeId: { in: scopedIds } } : {}),
+      ...(allStores ? { store: openStore } : {})
+    };
+    const scopedOrganizationEmployment = {
+      ...activeEmployment,
+      ...(scopedIds ? { costStoreId: { in: scopedIds } } : {}),
+      ...(allStores ? { costStore: openStore } : {})
+    };
     return this.prisma.v2Employee.findMany({
       where: {
         deletedAt: null,
         ...(organizationId
-          ? {
-              organizationEmployments: {
-                some: {
-                  organizationId,
-                  endedOn: null,
-                  deletedAt: null
-                }
-              }
-            }
-          : scopedIds
+          ? { organizationEmployments: { some: { organizationId, ...activeEmployment } } }
+          : scopedIds || allStores
             ? {
                 OR: [
-                  {
-                    employments: {
-                      some: {
-                        storeId: { in: scopedIds },
-                        endedOn: null,
-                        deletedAt: null
-                      }
-                    }
-                  },
-                  {
-                    organizationEmployments: {
-                      some: {
-                        costStoreId: { in: scopedIds },
-                        endedOn: null,
-                        deletedAt: null
-                      }
-                    }
-                  }
+                  { employments: { some: scopedStoreEmployment } },
+                  { organizationEmployments: { some: scopedOrganizationEmployment } }
                 ]
               }
             : {})
@@ -650,15 +652,13 @@ export class V2MasterDataService {
       orderBy: { employeeNo: 'asc' },
       include: {
         employments: {
-          where: {
-            endedOn: null,
-            deletedAt: null,
-            store: { status: { not: 'CLOSED' }, deletedAt: null }
-          },
+          where: allStores
+            ? scopedStoreEmployment
+            : { ...activeEmployment, store: openStore },
           include: { store: true, position: true }
         },
         organizationEmployments: {
-          where: { endedOn: null, deletedAt: null },
+          where: allStores ? scopedOrganizationEmployment : activeEmployment,
           include: { organization: true, position: true, costStore: true }
         }
       }
@@ -673,8 +673,13 @@ export class V2MasterDataService {
       throw new BadRequestException('请选择门店或总部组织');
     if (dto.storeId) this.assertStoreAccess(user, dto.storeId);
     const createLoginAccount = dto.createLoginAccount !== false;
-    if (createLoginAccount && !dto.phone)
-      throw new BadRequestException('自动开通登录账号时必须填写员工手机号');
+    if (dto.loginRoleIds != null) {
+      if (!(await this.isLiveSuperAdmin(user.id)))
+        throw new ForbiddenException('仅超级管理员可以绑定账号角色');
+      if (!createLoginAccount)
+        throw new BadRequestException('请先选择开通登录账号');
+    }
+    const phone = this.employeePhone(dto.phone);
     const position = isHeadOffice
       ? await this.prisma.v2OrganizationPosition.findFirst({
           where: {
@@ -732,29 +737,16 @@ export class V2MasterDataService {
       `EMPLOYEE:${hiredOn.getUTCFullYear()}`,
       `BC-${hiredOn.getUTCFullYear()}`
     );
-    const mappedRoleId = isHeadOffice
-      ? 'roleId' in position
-        ? position.roleId
-        : null
-      : 'template' in position
-        ? position.template?.roleId
-        : null;
-    const defaultRole =
-      createLoginAccount && mappedRoleId
-        ? await this.prisma.v2Role.findFirst({
-            where: { id: mappedRoleId, enabled: true, deletedAt: null }
-          })
-        : null;
-    const loginRoleIds = defaultRole ? [defaultRole.id] : [];
     const passwordHash = createLoginAccount
       ? await bcrypt.hash(dto.loginPassword || '123456', 12)
       : undefined;
     return this.prisma.$transaction(async (tx) => {
+      await this.assertEmployeePhoneAvailable(tx, phone);
       const employee = await tx.v2Employee.create({
         data: {
           employeeNo,
           name: dto.name,
-          phone: dto.phone,
+          phone,
           status: dto.status ?? 'ACTIVE',
           hiredOn,
           createdBy: user.id,
@@ -806,24 +798,21 @@ export class V2MasterDataService {
         }
       });
       if (createLoginAccount) {
-        await tx.v2Account.create({
+        const account = await tx.v2Account.create({
           data: {
             employeeId: employee.id,
-            username: dto.loginUsername || dto.phone!,
+            username: phone,
             passwordHash: passwordHash!,
             mustChangePassword: true,
-            displayName: dto.name,
+            displayName: dto.loginNickname?.trim() || dto.name,
             dataScope: 'EMPLOYEE_STORE',
+            usesAccountRoles: true,
             createdBy: user.id,
-            updatedBy: user.id,
-            roles: {
-              create: loginRoleIds.map((roleId) => ({
-                roleId,
-                createdBy: user.id
-              }))
-            }
+            updatedBy: user.id
           }
         });
+        if (dto.loginRoleIds != null)
+          await this.saveAccountRoles(tx, account.id, dto.loginRoleIds, user.id);
       }
       return tx.v2Employee.findUnique({
         where: { id: employee.id },
@@ -835,7 +824,23 @@ export class V2MasterDataService {
           changes: true
         }
       });
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }
+
+  private employeePhone(value?: string | null) {
+    const phone = value?.trim();
+    if (!phone || !/^1[3-9]\d{9}$/.test(phone))
+      throw new BadRequestException('请填写有效的 11 位手机号码');
+    return phone;
+  }
+
+  private async assertEmployeePhoneAvailable(tx: Prisma.TransactionClient, phone: string, employeeId?: string) {
+    const [employee, account, legacy] = await Promise.all([
+      tx.v2Employee.findFirst({ where: { phone, deletedAt: null, id: { not: employeeId } }, select: { id: true } }),
+      tx.v2Account.findFirst({ where: { username: phone, ...(employeeId ? { OR: [{ employeeId: null }, { employeeId: { not: employeeId } }] } : {}) }, select: { id: true } }),
+      tx.user.findFirst({ where: { username: phone, deletedAt: null }, select: { id: true } })
+    ]);
+    if (employee || account || legacy) throw new BadRequestException('该手机号已被其他员工或登录账号使用');
   }
 
   async updateEmployee(
@@ -844,18 +849,28 @@ export class V2MasterDataService {
     user: CurrentUser
   ) {
     await this.assertEmployeeAccess(user, employeeId);
+    if ((dto.loginRoleIds != null || dto.loginPassword != null) && !(await this.isLiveSuperAdmin(user.id)))
+      throw new ForbiddenException('仅超级管理员可以绑定账号角色');
     const employee = await this.prisma.v2Employee.findFirst({
       where: { id: employeeId, deletedAt: null }
     });
     if (!employee) throw new NotFoundException('员工不存在');
     if (dto.grade && !/^P\d{1,2}$/i.test(dto.grade))
       throw new BadRequestException('店长必须选择有效P等级');
+    if (dto.loginPassword && employee.status === 'TERMINATED')
+      throw new BadRequestException('离职员工不能开通登录账号');
+    if (dto.loginPassword && !dto.loginRoleIds?.length)
+      throw new BadRequestException('开通登录账号时请选择角色');
+    const passwordHash = dto.loginPassword ? await bcrypt.hash(dto.loginPassword, 12) : undefined;
     return this.prisma.$transaction(async (tx) => {
+      const current = await tx.v2Employee.findUniqueOrThrow({ where: { id: employeeId } });
+      const phone = this.employeePhone(dto.phone === undefined ? current.phone : dto.phone);
+      await this.assertEmployeePhoneAvailable(tx, phone, employeeId);
       const updated = await tx.v2Employee.update({
         where: { id: employeeId },
         data: {
           name: dto.name,
-          phone: dto.phone,
+          phone,
           hiredOn: dto.hiredOn ? new Date(dto.hiredOn) : undefined,
           updatedBy: user.id
         }
@@ -891,7 +906,39 @@ export class V2MasterDataService {
           }
         });
       }
+      let account = await tx.v2Account.findUnique({
+        where: { employeeId },
+        select: { id: true, username: true, displayName: true, deletedAt: true }
+      });
+      if (account && !account.deletedAt && (account.username !== phone || dto.loginNickname != null)) {
+        await tx.v2Account.update({
+          where: { id: account.id },
+          data: { username: phone, displayName: dto.loginNickname?.trim() || (dto.loginNickname != null ? updated.name : account.displayName), updatedBy: user.id }
+        });
+      }
+      if (dto.loginRoleIds != null) {
+        if (passwordHash) {
+          if (account) throw new BadRequestException('员工已开通登录账号');
+          if (!updated.phone) throw new BadRequestException('开通登录账号时必须填写手机号');
+          account = await tx.v2Account.create({
+            data: {
+              employeeId,
+              username: updated.phone,
+              displayName: dto.loginNickname?.trim() || updated.name,
+              passwordHash,
+              usesAccountRoles: true,
+              createdBy: user.id,
+              updatedBy: user.id
+            },
+            select: { id: true, username: true, displayName: true, deletedAt: true }
+          });
+        }
+        if (!account || account.deletedAt) throw new BadRequestException('员工尚未开通登录账号');
+        await this.saveAccountRoles(tx, account.id, dto.loginRoleIds, user.id);
+      }
       return updated;
+    }, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable
     });
   }
 
@@ -1381,6 +1428,9 @@ export class V2MasterDataService {
       where: { employeeId, deletedAt: null }
     });
     if (!account) throw new NotFoundException('该员工尚未开通登录账号');
+    const employee = await this.prisma.v2Employee.findUniqueOrThrow({ where: { id: employeeId } });
+    if (employee.status !== 'ACTIVE' || this.employeePhone(employee.phone) !== account.username)
+      throw new BadRequestException('请先确认员工在职，并在员工档案保存登录手机号');
     await this.prisma.v2Account.update({
       where: { id: account.id },
       data: {
@@ -1807,24 +1857,8 @@ export class V2MasterDataService {
     });
   }
 
-  listAccessControl() {
-    return Promise.all([
-      this.prisma.v2Account.findMany({
-        where: { deletedAt: null },
-        select: {
-          id: true,
-          username: true,
-          displayName: true,
-          status: true,
-          dataScope: true,
-          employee: { select: { id: true, name: true, employeeNo: true } },
-          roles: { include: { role: true } },
-          storeScopes: {
-            include: { store: { select: { id: true, name: true } } }
-          }
-        },
-        orderBy: { username: 'asc' }
-      }),
+  async listRoleCatalog() {
+    const [roles, permissions] = await Promise.all([
       this.prisma.v2Role.findMany({
         where: { deletedAt: null },
         include: { permissions: { include: { permission: true } } },
@@ -1833,11 +1867,32 @@ export class V2MasterDataService {
       this.prisma.v2Permission.findMany({
         orderBy: [{ module: 'asc' }, { code: 'asc' }]
       })
-    ]).then(([accounts, roles, permissions]) => ({
-      accounts,
-      roles,
-      permissions
-    }));
+    ]);
+    return { roles, permissions };
+  }
+
+  async listAccessControl() {
+    const [accounts, catalog] = await Promise.all([
+      this.prisma.v2Account.findMany({
+        where: { deletedAt: null },
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          status: true,
+          dataScope: true,
+          usesAccountRoles: true,
+          employee: { select: { id: true, name: true, employeeNo: true } },
+          roles: { include: { role: true } },
+          storeScopes: {
+            include: { store: { select: { id: true, name: true } } }
+          }
+        },
+        orderBy: { username: 'asc' }
+      }),
+      this.listRoleCatalog()
+    ]);
+    return { accounts, ...catalog };
   }
 
   async listLoginUsers() {
@@ -1863,6 +1918,7 @@ export class V2MasterDataService {
           displayName: true,
           status: true,
           dataScope: true,
+          usesAccountRoles: true,
           lastLoginAt: true,
           employee: {
             select: {
@@ -1919,6 +1975,7 @@ export class V2MasterDataService {
         displayName: item.displayName,
         status: item.status,
         dataScope: item.dataScope,
+        usesAccountRoles: item.usesAccountRoles || !item.employee,
         employee: item.employee
           ? {
               id: item.employee.id,
@@ -1965,27 +2022,8 @@ export class V2MasterDataService {
     return { items, total, page: safePage, pageSize: safePageSize };
   }
 
-  async isLiveSuperAdmin(id: string) {
-    const v2 = await this.prisma.v2Account.findUnique({
-      where: { id },
-      select: {
-        status: true, deletedAt: true, mustChangePassword: true,
-        employee: { select: { status: true, deletedAt: true } },
-        roles: {
-          where: { role: { code: 'super_admin', enabled: true, deletedAt: null } },
-          select: { roleId: true }
-        }
-      }
-    });
-    if (v2) {
-      return v2.status === 'ACTIVE' && !v2.deletedAt && !v2.mustChangePassword &&
-        (!v2.employee || (v2.employee.status === 'ACTIVE' && !v2.employee.deletedAt)) &&
-        v2.roles.length > 0;
-    }
-    return Boolean(await this.prisma.user.findFirst({
-      where: { id, enabled: true, deletedAt: null, roles: { some: { role: { code: 'super_admin', deletedAt: null } } } },
-      select: { id: true }
-    }));
+  isLiveSuperAdmin(id: string) {
+    return isLiveSuperAdmin(this.prisma, id);
   }
 
   async previewScopedPermissions(id: string) {
@@ -2133,19 +2171,90 @@ export class V2MasterDataService {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
   }
 
+  async updateAccountRoles(id: string, roleIds: string[], actorId: string) {
+    return this.prisma.$transaction(
+      (tx) => this.saveAccountRoles(tx, id, roleIds, actorId),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  }
+
+  private async saveAccountRoles(
+    tx: Prisma.TransactionClient,
+    id: string,
+    roleIds: string[],
+    actorId: string
+  ) {
+    const selected = [...new Set(roleIds)].sort();
+    const account = await tx.v2Account.findFirst({
+      where: { id, deletedAt: null },
+      select: {
+        displayName: true,
+        usesAccountRoles: true,
+        employeeId: true,
+        roles: { select: { roleId: true, role: { select: { code: true } } } }
+      }
+    });
+    if (!account) throw new NotFoundException('V2 账号不存在');
+    if (account.roles.some(({ role }) => role.code === 'super_admin'))
+      throw new ForbiddenException('超级管理员账号角色受保护');
+    const allowedRoles = await tx.v2Role.count({
+      where: {
+        id: { in: selected },
+        code: { not: 'super_admin' },
+        enabled: true,
+        deletedAt: null
+      }
+    });
+    if (allowedRoles !== selected.length)
+      throw new BadRequestException('包含无效、停用或受保护的角色');
+
+    const before = {
+      usesAccountRoles: account.usesAccountRoles || !account.employeeId,
+      roleIds: account.roles.map(({ roleId }) => roleId).sort()
+    };
+    const after = { usesAccountRoles: true, roleIds: selected };
+    if (account.usesAccountRoles && JSON.stringify(before) === JSON.stringify(after))
+      return after;
+
+    await tx.v2Account.update({
+      where: { id },
+      data: { usesAccountRoles: true, updatedBy: actorId }
+    });
+    await tx.v2AccountRole.deleteMany({ where: { accountId: id } });
+    if (selected.length) {
+      await tx.v2AccountRole.createMany({
+        data: selected.map((roleId) => ({ accountId: id, roleId, createdBy: actorId }))
+      });
+    }
+    await tx.v2AuthorizationAudit.create({
+      data: { subject: 'ACCOUNT_ROLES', subjectId: id, subjectName: account.displayName, actorId, before, after }
+    });
+    return after;
+  }
+
   async createAccount(dto: CreateV2AccountDto, user: CurrentUser) {
     const { password, roleIds = [], storeIds = [], ...account } = dto;
+    if (account.employeeId) throw new BadRequestException('请在员工档案开通员工账号');
+    const selectedRoles = [...new Set(roleIds)];
+    if (!selectedRoles.length)
+      throw new BadRequestException('请至少选择一个角色');
     const passwordHash = await bcrypt.hash(password, 12);
     return this.prisma.$transaction(async tx => {
+      const enabledRoleCount = await tx.v2Role.count({
+        where: { id: { in: selectedRoles }, enabled: true, deletedAt: null }
+      });
+      if (enabledRoleCount !== selectedRoles.length)
+        throw new BadRequestException('包含无效或停用的角色');
       const created = await tx.v2Account.create({
       data: {
         ...account,
+        usesAccountRoles: true,
         passwordHash,
         mustChangePassword: true,
         createdBy: user.id,
         updatedBy: user.id,
         roles: {
-          create: roleIds.map((roleId) => ({ roleId, createdBy: user.id }))
+          create: selectedRoles.map((roleId) => ({ roleId, createdBy: user.id }))
         },
         storeScopes: {
           create: storeIds.map((storeId) => ({ storeId, createdBy: user.id }))

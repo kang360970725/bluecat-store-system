@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { compare, hash } from 'bcryptjs';
 import type { CurrentUser, LoginResult } from '@bluecat/shared';
+import { readDirectAccountAccess, resolveAccountStoreIds } from '../../common/direct-account-access';
 import { PrismaService } from '../../database/prisma.service';
 import { ChangePasswordDto, LoginDto } from './dto';
 
@@ -116,17 +117,28 @@ export class AuthService {
     return this.signSession(currentUser);
   }
 
+  openWechatSession(accountId: string, wechatBoundAt: string) {
+    return this.loginV2({ accountId, wechatBoundAt }, {});
+  }
+
   private async loginV2(
-    dto: LoginDto,
+    dto: LoginDto | { accountId: string; wechatBoundAt: string },
     context: { ipAddress?: string; userAgent?: string }
   ): Promise<LoginResult> {
+    const today = new Date(new Date(Date.now() + 28_800_000).toISOString().slice(0, 10));
     const account = await this.prisma.v2Account.findFirst({
-      where: { username: dto.username, status: 'ACTIVE', deletedAt: null },
+      where: {
+        ...('accountId' in dto
+          ? { id: dto.accountId, employeeId: { not: null }, mustChangePassword: false,
+              attendanceWechatBinding: { createdAt: new Date(dto.wechatBoundAt) } }
+          : { username: dto.username }),
+        status: 'ACTIVE', deletedAt: null
+      },
       include: {
         employee: {
           include: {
             employments: {
-              where: { endedOn: null, deletedAt: null },
+              where: { endedOn: null, deletedAt: null, startedOn: { lte: today } },
               include: {
                 store: true,
                 position: {
@@ -146,7 +158,7 @@ export class AuthService {
               orderBy: [{ isPrimary: 'desc' }, { startedOn: 'asc' }]
             },
             organizationEmployments: {
-              where: { endedOn: null, deletedAt: null },
+              where: { endedOn: null, deletedAt: null, startedOn: { lte: today } },
               include: {
                 organization: true,
                 costStore: true,
@@ -174,7 +186,13 @@ export class AuthService {
         storeScopes: true
       }
     });
-    if (!account || !(await compare(dto.password, account.passwordHash))) {
+    if (
+      !account ||
+      ('password' in dto && !(await compare(dto.password, account.passwordHash))) ||
+      (account.employeeId &&
+        (!account.employee || account.employee.deletedAt || account.employee.status !== 'ACTIVE' ||
+          !/^1[3-9]\d{9}$/.test(account.username) || account.employee.phone !== account.username))
+    ) {
       throw new UnauthorizedException('账号或密码错误');
     }
     const employment = account.employee?.employments[0];
@@ -190,7 +208,7 @@ export class AuthService {
         .map((item) => item.position.role)
         .filter(Boolean) ?? [])
     ];
-    const effectiveRoles = account.employee
+    const effectiveRoles = account.employee && !account.usesAccountRoles
       ? [
           ...accountRoles.filter((role) => role.code === 'super_admin'),
           ...positionRoles.filter(role => role?.enabled && !role.deletedAt && role.code !== 'super_admin')
@@ -203,25 +221,13 @@ export class AuthService {
     const permissions = uniqueRoles.flatMap((role) =>
       role.permissions.map((link) => link.permission.code)
     );
-    const accessibleStoreIds =
-      account.dataScope === 'ALL_STORES'
-        ? (
-            await this.prisma.v2Store.findMany({
-              where: { deletedAt: null },
-              select: { id: true }
-            })
-          ).map((item) => item.id)
-        : account.dataScope === 'ASSIGNED_STORES'
-          ? account.storeScopes.map((item) => item.storeId)
-          : Array.from(
-              new Set([
-                ...(account.employee?.employments.map((item) => item.storeId) ??
-                  []),
-                ...(account.employee?.organizationEmployments
-                  .map((item) => item.costStoreId)
-                  .filter(Boolean) as string[])
-              ])
-            );
+    const accessibleStoreIds = resolveAccountStoreIds(account, roleCodes) ?? (
+      await this.prisma.v2Store.findMany({
+        where: { deletedAt: null, status: { not: 'CLOSED' } },
+        select: { id: true }
+      })
+    ).map(({ id }) => id);
+    const primaryStoreId = employment?.storeId ?? organizationEmployment?.costStoreId ?? null;
     const currentUser: CurrentUser = {
       id: account.id,
       username: account.username,
@@ -230,8 +236,9 @@ export class AuthService {
         employment?.store.organizationId ??
         organizationEmployment?.organizationId ??
         null,
-      storeId:
-        employment?.storeId ?? organizationEmployment?.costStoreId ?? null,
+      storeId: primaryStoreId && accessibleStoreIds.includes(primaryStoreId)
+        ? primaryStoreId
+        : accessibleStoreIds[0] ?? null,
       employeeId: account.employeeId ?? null,
       positionId:
         employment?.positionId ?? organizationEmployment?.positionId ?? null,
@@ -258,7 +265,7 @@ export class AuthService {
         }
       })
     ]);
-    return this.signSession(currentUser);
+    return this.signSession({ ...currentUser, wechatBoundAt: 'wechatBoundAt' in dto ? dto.wechatBoundAt : undefined });
   }
 
   private recordLogin(
@@ -315,7 +322,12 @@ export class AuthService {
         mustChangePassword: false
       }
     });
-    return this.signSession({ ...user, mustChangePassword: false });
+    const direct = await readDirectAccountAccess(this.prisma, account.id);
+    return this.signSession({
+      ...user,
+      ...(direct?.active && !('inherited' in direct) ? { roles: direct.roles, permissions: direct.permissions } : {}),
+      mustChangePassword: false
+    });
   }
 
   private async signSession(currentUser: CurrentUser): Promise<LoginResult> {

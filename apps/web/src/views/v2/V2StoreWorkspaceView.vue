@@ -479,7 +479,12 @@
                 "
                 empty="尚无在岗员工"
             /></n-tab-pane>
-            <n-tab-pane name="schedules" tab="排班与考勤">
+            <n-tab-pane
+              v-if="canViewSchedules"
+              name="schedules"
+              tab="排班与考勤"
+            >
+              <store-schedules :store-id="archive.store.id" />
               <v2-attendance-wifi-settings :store-id="archive.store.id" />
             </n-tab-pane>
             <n-tab-pane name="ota" tab="团购核销">
@@ -1549,7 +1554,6 @@ import {
   NTabPane,
   NTabs,
   NInputNumber,
-  NSelect,
   NDatePicker,
   NButton,
   NEmpty,
@@ -1561,6 +1565,7 @@ import {
   NDescriptions,
   NDescriptionsItem
 } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { useRoute, useRouter } from 'vue-router';
 import {
   createV2StoreArea,
@@ -1606,10 +1611,13 @@ import {
   type V2StorePerformance
 } from '@/api/v2-operations';
 import { storeDisplayName } from '@/utils/store-display';
+import { useAuthStore } from '@/stores/auth';
+import StoreSchedules from '@/components/store/StoreSchedules.vue';
 import V2AttendanceWifiSettings from '@/components/v2/V2AttendanceWifiSettings.vue';
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthStore();
 const archive = ref<V2StoreArchive | null>(null);
 const performance = ref<V2StorePerformance | null>(null);
 const dashboard = ref<V2OperatingDashboard | null>(null);
@@ -1664,7 +1672,14 @@ const resumeProductCategorySync = ref(false);
 let collectorLoginPollTimer: ReturnType<typeof setTimeout> | null = null;
 const loading = ref(false);
 const error = ref('');
-const activeTab = ref('overview');
+const activeTab = ref(
+  typeof route.query.tab === 'string' ? route.query.tab : 'overview'
+);
+const canViewSchedules = computed(
+  () =>
+    auth.user?.roles.includes('super_admin') ||
+    auth.user?.permissions.includes('schedule:view')
+);
 const editorOpen = ref(false);
 const editorKind = ref('');
 const saving = ref(false);

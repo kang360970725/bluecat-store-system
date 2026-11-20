@@ -342,7 +342,6 @@
 import { computed, h, onMounted, reactive, ref } from 'vue';
 import {
   NInputNumber,
-  NSelect,
   NDataTable,
   NButton,
   NPopconfirm,
@@ -352,6 +351,7 @@ import {
   NTimeline,
   NTimelineItem
 } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { useAuthStore } from '@/stores/auth';
 import MonthGridPicker from '@/components/MonthGridPicker.vue';
 import {

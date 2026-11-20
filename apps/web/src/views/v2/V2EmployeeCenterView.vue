@@ -2,7 +2,7 @@
   <div class="page-stack">
     <div class="section-head">
       <div>
-        <h1>员工中心</h1>
+        <h1>员工档案</h1>
         <p>员工档案、门店任职和登录账号统一管理。</p>
       </div>
       <n-space>
@@ -58,45 +58,15 @@
     <n-card :title="`${selectedScopeLabel} · 员工与任职`" :bordered="false"
       ><n-empty
         v-if="!employeeLoading && !employees.length"
-        description="当前组织暂无在职员工" /><n-data-table
+        description="当前范围暂无员工" /><n-data-table
         v-else
         :loading="employeeLoading"
         :columns="columns"
         :data="employees"
+        :row-key="(employee: V2EmployeeItem) => employee.id"
+        :pagination="{ pageSize: 20 }"
         :scroll-x="760"
     /></n-card>
-    <n-card v-if="isSuperAdmin" :bordered="false">
-      <n-collapse>
-        <n-collapse-item name="system-accounts">
-          <template #header>
-            <div class="account-collapse-title">
-              <strong>系统账号与管理员配置</strong>
-              <n-tag size="small" :bordered="false"
-                >{{ access?.accounts.length ?? 0 }} 个账号</n-tag
-              >
-            </div>
-          </template>
-          <n-alert type="info" :bordered="false" class="account-link-hint">
-            员工账号权限由当前岗位自动映射；系统管理员账号请在“账号与角色”中集中维护。
-          </n-alert>
-          <n-empty v-if="!access?.accounts.length" description="尚未开通账号" />
-          <n-list v-else bordered>
-            <n-list-item v-for="item in access.accounts" :key="item.id">
-              <div class="account-row">
-                <div>
-                  <strong>{{ item.displayName }}</strong>
-                  <small
-                    >{{ item.username }} ·
-                    {{ item.employee?.name ?? '未绑定员工' }}</small
-                  >
-                </div>
-                <n-tag>{{ item.dataScope }}</n-tag>
-              </div>
-            </n-list-item>
-          </n-list>
-        </n-collapse-item>
-      </n-collapse>
-    </n-card>
     <n-modal
       v-model:show="modalOpen"
       preset="card"
@@ -113,7 +83,7 @@
                 placeholder="保存时由系统自动生成" /></n-form-item-gi
             ><n-form-item-gi label="姓名"
               ><n-input v-model:value="form.name" /></n-form-item-gi></n-grid
-          ><n-form-item label="手机号"
+          ><n-form-item label="手机号（登录用，必填）"
             ><n-input v-model:value="form.phone" /></n-form-item
           ><n-form-item label="入职日期"
             ><n-date-picker
@@ -133,10 +103,8 @@
               ><n-form-item-gi label="P等级"
                 ><n-select
                   v-model:value="form.grade"
+                  @update:value="gradeChanged = true"
                   :options="managerGrades"
-                  :menu-props="gradeMenuProps"
-                  :consistent-menu-width="false"
-                  placement="top-start"
               /></n-form-item-gi>
               <n-form-item-gi label="职级生效日期"
                 ><n-date-picker
@@ -147,6 +115,36 @@
             ><n-alert type="info" :bordered="false"
               >P等级调整将记录生效日期，并在工资核算时读取对应P等级标准。</n-alert
             ></template
+          ><template v-if="kind === 'editEmployee' && editableAccount">
+            <n-divider>登录账号</n-divider>
+            <n-form-item label="昵称"><n-input v-model:value="form.loginNickname" placeholder="默认使用员工姓名" /></n-form-item>
+            <n-form-item label="账号角色">
+              <n-select
+                v-model:value="form.loginRoleIds"
+                :options="employeeRoleOptions"
+                multiple
+                filterable
+                placeholder="选择账号角色"
+                @update:value="roleSelectionChanged = true"
+              />
+            </n-form-item>
+            <n-alert v-if="!editableAccount.usesAccountRoles" type="info">
+              当前按岗位授权。选择并保存账号角色后，所选角色适用于该账号的授权门店。
+            </n-alert>
+          </template
+          ><template v-if="kind === 'editEmployee' && canOpenEmployeeAccount">
+            <n-divider>登录账号</n-divider>
+            <n-checkbox v-model:checked="form.openEmployeeAccount">开通登录账号</n-checkbox>
+            <template v-if="form.openEmployeeAccount">
+              <n-form-item label="昵称"><n-input v-model:value="form.loginNickname" placeholder="默认使用员工姓名" /></n-form-item>
+              <n-form-item label="初始密码">
+                <n-input v-model:value="form.loginPassword" type="password" placeholder="至少 8 位" />
+              </n-form-item>
+              <n-form-item label="账号角色">
+                <n-select v-model:value="form.loginRoleIds" :options="employeeRoleOptions" multiple filterable />
+              </n-form-item>
+            </template>
+          </template
           ><template v-if="kind === 'employee'"
             ><n-form-item v-if="isSuperAdmin" label="任职类型"
               ><n-radio-group
@@ -163,8 +161,6 @@
                 ><n-select
                   v-model:value="form.storeId"
                   :options="storeOptions"
-                  :menu-props="storeMenuProps"
-                  placement="top-start"
                   filterable
                   @update:value="loadPositions" /></n-form-item
               ><n-form-item label="岗位"
@@ -200,9 +196,6 @@
                 ><n-select
                   v-model:value="form.grade"
                   :options="managerGrades"
-                  :menu-props="gradeMenuProps"
-                  :consistent-menu-width="false"
-                  placement="top-start"
               /></n-form-item>
               <n-form-item label="管理门店（必选）"
                 ><n-select
@@ -219,19 +212,20 @@
                 >同步开通登录账号</n-checkbox
               ><template v-if="form.createLoginAccount"
                 ><n-grid :cols="2" :x-gap="12" class="login-fields"
-                  ><n-form-item-gi label="登录账号"
+                  ><n-form-item-gi label="昵称"
                     ><n-input
-                      v-model:value="form.loginUsername"
-                      disabled
-                      placeholder="默认使用员工手机号" /></n-form-item-gi
+                      v-model:value="form.loginNickname"
+                      placeholder="默认使用员工姓名" /></n-form-item-gi
                   ><n-form-item-gi label="初始密码"
                     ><n-input
                       v-model:value="form.loginPassword"
                       type="password"
                       disabled
                       placeholder="123456" /></n-form-item-gi></n-grid
-                ><small class="account-hint"
-                  >账号权限由任职岗位自动确定，调岗或兼岗后自动更新；首次登录必须修改密码。</small
+                ><n-form-item label="账号角色">
+                  <n-select v-model:value="form.loginRoleIds" :options="employeeRoleOptions" multiple filterable />
+                </n-form-item
+                ><small class="account-hint">首次登录必须修改密码。</small
                 ></template
               ></template
             >
@@ -440,57 +434,7 @@
               placeholder="首次建档、晋升、转正或薪资调整"
           /></n-form-item>
         </template>
-        <template v-else-if="kind === 'role'"
-          ><n-form-item label="角色名称"
-            ><n-input v-model:value="form.name" /></n-form-item
-          ><n-form-item label="角色编码"
-            ><n-input v-model:value="form.code" /></n-form-item
-          ><n-form-item label="权限"
-            ><n-checkbox-group v-model:value="form.permissionCodes"
-              ><n-space
-                ><n-checkbox
-                  v-for="item in permissionOptions"
-                  :key="item.value"
-                  :value="item.value"
-                  :label="
-                    item.label
-                  " /></n-space></n-checkbox-group></n-form-item
-          ><n-form-item label="说明"
-            ><n-input
-              v-model:value="form.description"
-              type="textarea" /></n-form-item
-        ></template>
-        <template v-else
-          ><n-form-item label="登录名"
-            ><n-input v-model:value="form.username" /></n-form-item
-          ><n-form-item label="初始密码"
-            ><n-input
-              v-model:value="form.password"
-              type="password" /></n-form-item
-          ><n-form-item label="显示名称"
-            ><n-input v-model:value="form.displayName" /></n-form-item
-          ><n-form-item label="关联员工"
-            ><n-select
-              v-model:value="form.employeeId"
-              :options="employeeOptions"
-              clearable /></n-form-item
-          ><n-form-item label="数据范围"
-            ><n-select
-              v-model:value="form.dataScope"
-              :options="dataScopeOptions" /></n-form-item
-          ><n-form-item
-            v-if="form.dataScope === 'ASSIGNED_STORES'"
-            label="指定门店"
-            ><n-select
-              v-model:value="form.storeIds"
-              :options="storeOptions"
-              multiple /></n-form-item
-          ><n-form-item label="角色"
-            ><n-select
-              v-model:value="form.roleIds"
-              :options="roleOptions"
-              multiple /></n-form-item
-        ></template> </n-form
+ </n-form
       ><template #footer
         ><n-space justify="end"
           ><n-button @click="modalOpen = false">取消</n-button
@@ -517,7 +461,6 @@
 import { computed, h, onMounted, reactive, ref } from 'vue';
 import {
   NInputNumber,
-  NSelect,
   NDataTable,
   NDatePicker,
   NButton,
@@ -527,16 +470,15 @@ import {
   type DataTableColumns,
   useMessage
 } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import {
   addV2Employment,
   changeV2ManagerStore,
   changeV2Employment,
-  createV2Account,
   createV2Employee,
   downloadV2EmployeeImportTemplate,
   createV2EmployeeLeave,
   createV2EmployeePayrollProfile,
-  createV2Role,
   getV2AccessControl,
   getV2Employees,
   getV2EmployeePayrollProfiles,
@@ -557,6 +499,8 @@ import {
 } from '@/api/v2-master-data';
 import { useAuthStore } from '@/stores/auth';
 import { storeDisplayName } from '@/utils/store-display';
+const allStoresScope = 'ALL_STORES';
+const allEmployeesScope = 'ALL_EMPLOYEES';
 const message = useMessage(),
   auth = useAuthStore(),
   isSuperAdmin = computed(
@@ -591,21 +535,11 @@ const canPayrollView = computed(
     isSuperAdmin.value ||
     auth.user?.permissions.includes('employee.payroll:view')
 );
-const storeMenuProps = {
-  class: 'employee-store-select-menu',
-  style: { '--n-height': 'min(360px, calc(100svh - 140px))' }
-};
-const gradeMenuProps = {
-  class: 'employee-grade-select-menu',
-  style: { minWidth: '220px', maxHeight: '240px', zIndex: '10000' }
-};
 const title = computed(
     () =>
       ({
         employee: '新增员工',
         editEmployee: `编辑员工 · ${selectedEmployee.value?.name ?? ''}`,
-        role: '新增角色',
-        account: '开通登录账号',
         managerTransfer: `店长调店 · ${selectedEmployee.value?.name ?? ''}`,
         transfer: `调店/调岗 · ${selectedEmployee.value?.name ?? ''}`,
         employment: `新增兼任 · ${selectedEmployee.value?.name ?? ''}`,
@@ -636,9 +570,17 @@ const title = computed(
       value: item.id
     }))
   ),
-  scopeOptions = computed(() =>
-    scopeType.value === 'STORE' ? storeOptions.value : headOfficeOptions.value
-  ),
+  scopeOptions = computed(() => {
+    if (scopeType.value === 'ORGANIZATION') return headOfficeOptions.value;
+    return [
+      ...(isSuperAdmin.value ? [{ label: '全部员工', value: allEmployeesScope }] : []),
+      {
+        label: isSuperAdmin.value ? '全部门店' : '全部授权门店',
+        value: allStoresScope
+      },
+      ...storeOptions.value
+    ];
+  }),
   selectedScopeLabel = computed(
     () =>
       scopeOptions.value.find((item) => item.value === selectedScopeId.value)
@@ -658,42 +600,12 @@ const title = computed(
       .find((item) => item.id === form.organizationId)
       ?.positions.find((item) => item.id === form.organizationPositionId)
   ),
-  employeeOptions = computed(() =>
-    employees.value.map((i) => ({
-      label: `${i.name} · ${i.employeeNo}`,
-      value: i.id
-    }))
-  ),
-  roleOptions = computed(
-    () => access.value?.roles.map((i) => ({ label: i.name, value: i.id })) ?? []
-  ),
-  dataScopeOptions = [
-    { label: '员工任职门店', value: 'EMPLOYEE_STORE' },
-    { label: '指定门店', value: 'ASSIGNED_STORES' },
-    { label: '全部门店', value: 'ALL_STORES' }
-  ],
   leaveTypeOptions = [
     { label: '年假', value: 'ANNUAL' },
     { label: '病假', value: 'SICK' },
     { label: '事假', value: 'PERSONAL' },
     { label: '调休', value: 'COMPENSATORY' },
     { label: '其他', value: 'OTHER' }
-  ],
-  permissionOptions = [
-    { label: '门店查看', value: 'store:view' },
-    { label: '门店维护', value: 'store:update' },
-    { label: '员工查看', value: 'employee:view' },
-    { label: '员工维护', value: 'employee:update' },
-    { label: '员工新增', value: 'employee:create' },
-    { label: '排班维护', value: 'schedule:update' },
-    { label: '业绩查看', value: 'performance:view' },
-    { label: '业绩维护/采集', value: 'performance:update' },
-    { label: '评分查看', value: 'scoring:view' },
-    { label: '评分维护', value: 'scoring:update' },
-    { label: '权限查看', value: 'permission:view' },
-    { label: '权限维护', value: 'permission:update' },
-    { label: '薪资档案查看', value: 'employee.payroll:view' },
-    { label: '薪资档案维护', value: 'employee.payroll:update' }
   ];
 const payrollTypeOptions = [
   { label: '门店普通员工', value: 'STORE_STAFF' },
@@ -721,6 +633,24 @@ const employeeAccountMap = computed(
         .map((account) => [account.employee!.id, account])
     )
 );
+const roleSelectionChanged = ref(false);
+const gradeChanged = ref(false);
+const editableAccount = computed(() => {
+  const account = employeeAccountMap.value.get(selectedEmployee.value?.id ?? '');
+  return isSuperAdmin.value && account && !account.roles.some(({ role }) => role.code === 'super_admin')
+    ? account
+    : undefined;
+});
+const canOpenEmployeeAccount = computed(() =>
+  Boolean(isSuperAdmin.value && access.value && selectedEmployee.value &&
+    selectedEmployee.value.status !== 'TERMINATED' &&
+    !employeeAccountMap.value.has(selectedEmployee.value.id))
+);
+const employeeRoleOptions = computed(() =>
+  (access.value?.roles ?? [])
+    .filter((role) => role.enabled && role.code !== 'super_admin')
+    .map((role) => ({ label: role.name, value: role.id }))
+);
 const scopedAccountCount = computed(
   () =>
     employees.value.filter((item) => employeeAccountMap.value.has(item.id))
@@ -733,10 +663,10 @@ const scopedPositionCount = computed(
         scopeType.value === 'STORE'
           ? [
               ...employee.employments
-                .filter((item) => item.store.id === selectedScopeId.value)
+                .filter((item) => [allEmployeesScope, allStoresScope].includes(selectedScopeId.value ?? '') || item.store.id === selectedScopeId.value)
                 .map((item) => item.position.id),
               ...employee.organizationEmployments
-                .filter((item) => item.costStore?.id === selectedScopeId.value)
+                .filter((item) => [allEmployeesScope, allStoresScope].includes(selectedScopeId.value ?? '') || item.costStore?.id === selectedScopeId.value)
                 .map((item) => item.position.id)
             ]
           : employee.organizationEmployments
@@ -805,12 +735,15 @@ const columns: DataTableColumns<V2EmployeeItem> = [
     minWidth: 170,
     render: (r) => {
       const account = employeeAccountMap.value.get(r.id);
+      if (!access.value) return '—';
       if (!account) return '未开通';
       return h('div', { class: 'employee-account-cell' }, [
         h('span', `${account.username} · ${account.status}`),
         h(
           'small',
-          account.roles.map((item) => item.role.name).join('、') || '未分配角色'
+          account.usesAccountRoles
+            ? account.roles.map((item) => item.role.name).join('、') || '未分配角色'
+            : '随岗位授权'
         )
       ]);
     }
@@ -933,20 +866,29 @@ async function load() {
   payrollTemplates.value = templateData;
   await loadScopedEmployees();
 }
+let employeeLoadSequence = 0;
 async function loadScopedEmployees() {
-  if (!selectedScopeId.value) {
-    employees.value = [];
-    return;
-  }
-  employeeLoading.value = true;
+  const sequence = ++employeeLoadSequence;
+  const scopeId = selectedScopeId.value;
+  employees.value = [];
+  employeeLoading.value = Boolean(scopeId);
+  if (!scopeId) return;
   try {
-    employees.value = await getV2Employees(
-      scopeType.value === 'STORE'
-        ? { storeId: selectedScopeId.value }
-        : { organizationId: selectedScopeId.value }
+    const data = await getV2Employees(
+      scopeType.value === 'ORGANIZATION'
+        ? { organizationId: scopeId }
+        : scopeId === allEmployeesScope
+          ? undefined
+          : scopeId === allStoresScope
+          ? { allStores: true }
+          : { storeId: scopeId }
     );
+    if (sequence === employeeLoadSequence) employees.value = data;
+  } catch (error) {
+    if (sequence === employeeLoadSequence)
+      message.error(error instanceof Error ? error.message : '加载员工失败');
   } finally {
-    employeeLoading.value = false;
+    if (sequence === employeeLoadSequence) employeeLoading.value = false;
   }
 }
 async function changeScopeType() {
@@ -989,6 +931,8 @@ function applyPayrollGrade() {
 }
 function reset(k: string) {
   kind.value = k;
+  roleSelectionChanged.value = false;
+  gradeChanged.value = false;
   Object.keys(form).forEach((x) => delete form[x]);
   modalOpen.value = true;
 }
@@ -1051,6 +995,10 @@ function openAction(action: string, employee: V2EmployeeItem) {
   selectedEmployee.value = employee;
   reset(action);
   const today = new Date().toISOString().slice(0, 10);
+  if (action === 'editEmployee' && editableAccount.value)
+    form.loginNickname = editableAccount.value.displayName;
+  if (action === 'editEmployee' && editableAccount.value?.usesAccountRoles)
+    form.loginRoleIds = editableAccount.value.roles.map(({ role }) => role.id);
   if (action === 'editEmployee')
     Object.assign(form, {
       employeeNo: employee.employeeNo,
@@ -1129,6 +1077,10 @@ async function resetPassword(employee: V2EmployeeItem) {
   message.success(`密码已重置为 ${result.initialPassword}`);
 }
 async function save() {
+  if (['employee', 'editEmployee'].includes(kind.value) && !/^1[3-9]\d{9}$/.test(form.phone?.trim() ?? '')) {
+    message.warning('请填写有效的 11 位手机号码');
+    return;
+  }
   if (kind.value === 'employee') {
     if (!form.name?.trim() || !form.phone?.trim() || !form.hiredOn) {
       message.warning('请完整填写姓名、手机号和入职日期');
@@ -1148,13 +1100,35 @@ async function save() {
     )
       return message.warning('店长职能岗必须选择P等级和管理门店');
   }
+  if (kind.value === 'employee' && isSuperAdmin.value && form.createLoginAccount && !form.loginRoleIds?.length) {
+    message.warning('开通登录账号时请选择角色');
+    return;
+  }
+  if (kind.value === 'editEmployee' && form.openEmployeeAccount &&
+      (!form.phone?.trim() || (form.loginPassword?.length ?? 0) < 8 || !form.loginRoleIds?.length)) {
+    message.warning('请填写手机号、至少 8 位初始密码并选择角色');
+    return;
+  }
   saving.value = true;
   try {
-    if (kind.value === 'employee') await createV2Employee(form);
-    else if (kind.value === 'editEmployee' && selectedEmployee.value)
-      await updateV2Employee(selectedEmployee.value.id, form);
-    else if (kind.value === 'role') await createV2Role(form);
-    else if (kind.value === 'account') await createV2Account(form);
+    if (kind.value === 'employee' || (kind.value === 'editEmployee' && selectedEmployee.value)) {
+      const { loginRoleIds, openEmployeeAccount, loginPassword, loginNickname, ...details } = form;
+      if (kind.value === 'employee') {
+        await createV2Employee({
+          ...details,
+          ...(details.createLoginAccount ? { loginPassword, loginNickname } : {}),
+          ...(isSuperAdmin.value && details.createLoginAccount && loginRoleIds ? { loginRoleIds } : {})
+        });
+      } else if (selectedEmployee.value) {
+        await updateV2Employee(selectedEmployee.value.id, {
+          ...details,
+          ...(!gradeChanged.value ? { grade: undefined, gradeEffectiveOn: undefined } : {}),
+          ...(editableAccount.value ? { loginNickname } : {}),
+          ...(editableAccount.value && roleSelectionChanged.value ? { loginRoleIds } : {}),
+          ...(canOpenEmployeeAccount.value && openEmployeeAccount ? { loginPassword, loginRoleIds, loginNickname } : {})
+        });
+      }
+    }
     else if (kind.value === 'employment' && selectedEmployee.value)
       await addV2Employment(selectedEmployee.value.id, form);
     else if (kind.value === 'managerTransfer' && selectedEmployee.value)
@@ -1185,6 +1159,8 @@ async function save() {
         : '已保存',
       { duration: 6000 }
     );
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '保存员工失败');
   } finally {
     saving.value = false;
   }
@@ -1192,26 +1168,9 @@ async function save() {
 onMounted(() => void load());
 </script>
 <style scoped>
-:global(.employee-grade-select-menu) {
-  min-width: 220px !important;
-  max-height: min(240px, calc(100svh - 160px)) !important;
-  z-index: 10000 !important;
-}
-:global(.employee-grade-select-menu .n-base-select-menu__content) {
-  max-height: min(220px, calc(100svh - 180px)) !important;
-  overflow-y: auto !important;
-}
 .hidden-file-input { display: none; }
 .import-result-modal { width: min(680px, calc(100vw - 32px)); }
 .import-failure-list { margin-top: 16px; max-height: 360px; overflow-y: auto; }
-.account-collapse-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.account-link-hint {
-  margin-bottom: 12px;
-}
 .employee-scope-toolbar {
   display: flex;
   align-items: center;
@@ -1236,17 +1195,6 @@ onMounted(() => void load());
   .employee-scope-select {
     width: 100%;
   }
-}
-.account-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.account-row small {
-  display: block;
-  margin-top: 3px;
-  color: var(--bc-muted);
 }
 .login-fields {
   margin-top: 14px;

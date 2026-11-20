@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -34,10 +35,14 @@ import {
   CreateV2OperatingTargetDto,
   CreateV2ScheduleAssignmentDto,
   CreateV2SchedulePeriodDto,
+  UpdateV2ScheduleAssignmentDto,
   CreateV2ScorePlanDto,
   CreateV2ShiftTemplateDto,
+  ApplyV2ScheduleCycleDto,
   GenerateV2TargetAllocationsDto,
   SaveV2WecomWebhookDto,
+  SaveV2StoreShiftDto,
+  SaveV2ScheduleSuccessionDto,
   TriggerV2CaptureDto,
   MatchV2ExternalStoreCandidateDto,
   UpsertV2DataSourceDto
@@ -47,6 +52,7 @@ import {
   projectMonthlyRevenue,
   roundMetric
 } from './operations-dashboard.metrics';
+import { scheduleCycleValue, sourceOffsetForTargetDay } from './schedule-cycle';
 
 const CAPTURE_MODULES = new Set([
   'income',
@@ -87,13 +93,17 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
     if (this.scheduleTimer) clearInterval(this.scheduleTimer);
   }
 
-  overview() {
+  overview(user?: CurrentUser) {
     return Promise.all([
       this.prisma.v2ShiftTemplate.findMany({
         where: { deletedAt: null },
         orderBy: [{ sort: 'asc' }, { name: 'asc' }]
       }),
       this.prisma.v2SchedulePeriod.findMany({
+        where:
+          user && !user.roles.includes('super_admin')
+            ? { storeId: { in: user.accessibleStoreIds } }
+            : undefined,
         include: {
           store: { select: { id: true, name: true, shortName: true } },
           _count: { select: { assignments: true } }
@@ -1324,6 +1334,52 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
       daily: revenue,
       otaDaily,
       shifts
+    };
+  }
+
+  async storeCenterRanking(user: CurrentUser, month?: string) {
+    const isAdmin = user.roles.includes('super_admin');
+    const isStoreManager = user.roles.includes('store_manager');
+    const seesAllStores = isAdmin || isStoreManager;
+    if (
+      user.mustChangePassword ||
+      (!seesAllStores && !user.permissions.includes('performance:view'))
+    )
+      throw new ForbiddenException('无权查看门店经营排名');
+    const storeFilter = seesAllStores
+      ? {}
+      : { id: { in: user.accessibleStoreIds } };
+    const [ranking, stores] = await Promise.all([
+      this.storePerformanceRanking(seesAllStores ? undefined : user, month),
+      this.prisma.v2Store.findMany({
+        where: { ...storeFilter, deletedAt: null, status: { not: 'CLOSED' } },
+        select: { id: true, name: true, shortName: true, status: true }
+      })
+    ]);
+    const storeMap = new Map(stores.map((store) => [store.id, store]));
+    return {
+      ...ranking,
+      summaryScope: isAdmin ? 'all' : isStoreManager ? 'managed' : 'authorized',
+      summaryStoreIds: stores
+        .filter(
+          (store) => isAdmin || user.accessibleStoreIds.includes(store.id)
+        )
+        .map((store) => store.id),
+      items: ranking.items.flatMap((item) => {
+        const store = storeMap.get(item.storeId);
+        return store
+          ? [
+              {
+                ...item,
+                ...store,
+                canOpenWorkspace:
+                  isAdmin ||
+                  (user.permissions.includes('store:view') &&
+                    user.accessibleStoreIds.includes(store.id))
+              }
+            ]
+          : [];
+      })
     };
   }
 
@@ -2598,11 +2654,108 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  createSchedulePeriod(dto: CreateV2SchedulePeriodDto, user: CurrentUser) {
+  async listStoreSchedules(
+    storeId: string,
+    month: string | undefined,
+    user: CurrentUser
+  ) {
+    this.assertScheduleStore(user, storeId);
+    if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month))
+      throw new BadRequestException('月份格式无效');
+    const monthStart = month
+      ? new Date(`${month}-01T00:00:00.000Z`)
+      : undefined;
+    const monthEnd = monthStart
+      ? new Date(
+          Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1)
+        )
+      : undefined;
+    return this.prisma.v2SchedulePeriod.findMany({
+      where: {
+        storeId,
+        ...(monthStart && monthEnd
+          ? { startsOn: { lt: monthEnd }, endsOn: { gte: monthStart } }
+          : {})
+      },
+      include: { _count: { select: { assignments: true } } },
+      orderBy: [{ startsOn: 'desc' }, { createdAt: 'desc' }],
+      take: 24
+    });
+  }
+
+  async saveStoreShift(
+    storeId: string,
+    dto: SaveV2StoreShiftDto,
+    user: CurrentUser
+  ) {
+    this.assertScheduleStore(user, storeId);
+    if (dto.startsAt === dto.endsAt)
+      throw new BadRequestException('班次开始和结束时间不能相同');
+    const data = {
+      name: dto.name.trim(),
+      code: dto.code.trim().toUpperCase(),
+      startsAt: dto.startsAt,
+      endsAt: dto.endsAt,
+      spansNextDay: Boolean(dto.spansNextDay),
+      sort: dto.sort ?? 0,
+      enabled: true,
+      deletedAt: null
+    };
+    if (!dto.id)
+      return this.prisma.v2StoreShift.create({ data: { storeId, ...data } });
+    return this.prisma.$transaction(async (tx) => {
+      const current = await tx.v2StoreShift.findFirst({
+        where: { id: dto.id, storeId, deletedAt: null },
+        include: { _count: { select: { assignments: true } } }
+      });
+      if (!current) throw new NotFoundException('门店班次不存在');
+      if (!current._count.assignments)
+        return tx.v2StoreShift.update({ where: { id: current.id }, data });
+      await tx.v2StoreShift.update({
+        where: { id: current.id },
+        data: {
+          code: `${current.code}_ARCHIVED_${current.id.slice(-6)}`,
+          enabled: false
+        }
+      });
+      return tx.v2StoreShift.create({
+        data: { storeId, ...data, templateId: null }
+      });
+    });
+  }
+
+  async disableStoreShift(storeId: string, shiftId: string, user: CurrentUser) {
+    this.assertScheduleStore(user, storeId);
+    const shift = await this.prisma.v2StoreShift.findFirst({
+      where: { id: shiftId, storeId, deletedAt: null },
+      select: { id: true }
+    });
+    if (!shift) throw new NotFoundException('门店班次不存在');
+    return this.prisma.v2StoreShift.update({
+      where: { id: shiftId },
+      data: { enabled: false, deletedAt: new Date() }
+    });
+  }
+
+  async createSchedulePeriod(
+    dto: CreateV2SchedulePeriodDto,
+    user: CurrentUser
+  ) {
+    this.assertScheduleStore(user, dto.storeId);
     const startsOn = new Date(dto.startsOn);
     const endsOn = new Date(dto.endsOn);
     if (endsOn < startsOn)
       throw new BadRequestException('排班结束日期不能早于开始日期');
+    if ((endsOn.getTime() - startsOn.getTime()) / 86_400_000 + 1 > 31)
+      throw new BadRequestException('单个排班周期最长 31 天');
+    const overlap = await this.prisma.v2SchedulePeriod.count({
+      where: {
+        storeId: dto.storeId,
+        startsOn: { lte: endsOn },
+        endsOn: { gte: startsOn }
+      }
+    });
+    if (overlap) throw new BadRequestException('所选日期与已有排班周期重叠');
     return this.prisma.v2SchedulePeriod.create({
       data: {
         storeId: dto.storeId,
@@ -2614,7 +2767,7 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async scheduleDetail(id: string) {
+  async scheduleDetail(id: string, user: CurrentUser) {
     const period = await this.prisma.v2SchedulePeriod.findUnique({
       where: { id },
       include: {
@@ -2632,26 +2785,121 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
       }
     });
     if (!period) throw new NotFoundException('排班周期不存在');
+    this.assertScheduleStore(user, period.storeId);
     return period;
   }
 
-  storeScheduleOptions(storeId: string) {
-    return Promise.all([
-      this.prisma.v2StoreShift.findMany({
-        where: { storeId, enabled: true, deletedAt: null },
-        orderBy: [{ sort: 'asc' }, { name: 'asc' }]
-      }),
-      this.prisma.v2Employment.findMany({
-        where: { storeId, endedOn: null, deletedAt: null },
-        include: {
-          employee: {
-            select: { id: true, name: true, employeeNo: true, status: true }
+  async storeScheduleOptions(storeId: string, user: CurrentUser) {
+    this.assertScheduleStore(user, storeId);
+    const [shifts, employments, positions, formerRows, successions] =
+      await Promise.all([
+        this.prisma.v2StoreShift.findMany({
+          where: { storeId, enabled: true, deletedAt: null },
+          orderBy: [{ sort: 'asc' }, { name: 'asc' }]
+        }),
+        this.prisma.v2Employment.findMany({
+          where: { storeId, endedOn: null, deletedAt: null },
+          include: {
+            employee: {
+              select: { id: true, name: true, employeeNo: true, status: true }
+            },
+            position: { select: { id: true, name: true, code: true } }
           },
-          position: { select: { id: true, name: true, code: true } }
-        },
-        orderBy: { employee: { name: 'asc' } }
-      })
-    ]).then(([shifts, employments]) => ({ shifts, employments }));
+          orderBy: { employee: { name: 'asc' } }
+        }),
+        this.prisma.v2StorePosition.findMany({
+          where: { storeId, enabled: true, deletedAt: null },
+          select: { id: true, name: true, code: true },
+          orderBy: [{ name: 'asc' }, { code: 'asc' }]
+        }),
+        this.prisma.v2ScheduleAssignment.findMany({
+          where: { period: { storeId } },
+          distinct: ['employeeId'],
+          select: {
+            employee: { select: { id: true, name: true, employeeNo: true } }
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 200
+        }),
+        this.prisma.v2ScheduleSuccession.findMany({
+          where: { storeId },
+          orderBy: { updatedAt: 'desc' }
+        })
+      ]);
+    const employmentById = new Map(employments.map((item) => [item.id, item]));
+    return {
+      shifts,
+      employments,
+      positions,
+      formerEmployees: formerRows.map((item) => item.employee),
+      successions: successions.map((item) => ({
+        ...item,
+        successorEmployment:
+          employmentById.get(item.successorEmploymentId) ?? null
+      }))
+    };
+  }
+
+  async saveScheduleSuccession(
+    storeId: string,
+    dto: SaveV2ScheduleSuccessionDto,
+    user: CurrentUser
+  ) {
+    this.assertScheduleStore(user, storeId);
+    const successor = await this.prisma.v2Employment.findFirst({
+      where: {
+        id: dto.successorEmploymentId,
+        storeId,
+        endedOn: null,
+        deletedAt: null
+      },
+      select: { id: true, employeeId: true }
+    });
+    if (!successor)
+      throw new BadRequestException('接班员工不在本店当前在岗名单中');
+    if (successor.employeeId === dto.predecessorEmployeeId)
+      throw new BadRequestException('交接前后不能是同一名员工');
+    const predecessorExists = await this.prisma.v2ScheduleAssignment.count({
+      where: { employeeId: dto.predecessorEmployeeId, period: { storeId } }
+    });
+    if (!predecessorExists)
+      throw new BadRequestException('原员工在本店没有可继承的历史排班');
+    const effectiveFrom = new Date(dto.effectiveFrom);
+    return this.prisma.v2ScheduleSuccession.upsert({
+      where: {
+        storeId_predecessorEmployeeId: {
+          storeId,
+          predecessorEmployeeId: dto.predecessorEmployeeId
+        }
+      },
+      create: {
+        storeId,
+        predecessorEmployeeId: dto.predecessorEmployeeId,
+        successorEmploymentId: dto.successorEmploymentId,
+        effectiveFrom,
+        createdBy: user.id,
+        updatedBy: user.id
+      },
+      update: {
+        successorEmploymentId: dto.successorEmploymentId,
+        effectiveFrom,
+        updatedBy: user.id
+      }
+    });
+  }
+
+  async deleteScheduleSuccession(
+    storeId: string,
+    id: string,
+    user: CurrentUser
+  ) {
+    this.assertScheduleStore(user, storeId);
+    const item = await this.prisma.v2ScheduleSuccession.findFirst({
+      where: { id, storeId },
+      select: { id: true }
+    });
+    if (!item) throw new NotFoundException('排班工作继承记录不存在');
+    return this.prisma.v2ScheduleSuccession.delete({ where: { id } });
   }
 
   async createAssignment(
@@ -2663,39 +2911,366 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
     });
     if (!period || period.status === 'LOCKED')
       throw new BadRequestException('排班周期不存在或已锁定');
+    this.assertScheduleStore(user, period.storeId);
     const workDate = new Date(dto.workDate);
     if (workDate < period.startsOn || workDate > period.endsOn)
       throw new BadRequestException('排班日期不在周期范围内');
-    const [shift, employment] = await Promise.all([
-      this.prisma.v2StoreShift.findFirst({
-        where: {
-          id: dto.shiftId,
-          storeId: period.storeId,
-          enabled: true,
-          deletedAt: null
-        }
-      }),
+    if (dto.isRest && (dto.shiftId || dto.overtime))
+      throw new BadRequestException('休息日不能同时设置班次或加班');
+    if (!dto.isRest && !dto.shiftId)
+      throw new BadRequestException('上班请选择班次');
+    const [shift, employment, overtimePosition, existing] = await Promise.all([
+      dto.shiftId
+        ? this.prisma.v2StoreShift.findFirst({
+            where: {
+              id: dto.shiftId,
+              storeId: period.storeId,
+              enabled: true,
+              deletedAt: null
+            }
+          })
+        : Promise.resolve(null),
       this.prisma.v2Employment.findFirst({
         where: {
           employeeId: dto.employeeId,
-          positionId: dto.positionId,
+          positionId: dto.overtime ? undefined : dto.positionId,
           storeId: period.storeId,
-          endedOn: null,
+          startedOn: { lte: workDate },
+          OR: [{ endedOn: null }, { endedOn: { gte: workDate } }],
           deletedAt: null
         }
+      }),
+      dto.overtime
+        ? this.prisma.v2StorePosition.findFirst({
+            where: {
+              id: dto.positionId,
+              storeId: period.storeId,
+              enabled: true,
+              deletedAt: null
+            },
+            select: { id: true }
+          })
+        : Promise.resolve(null),
+      this.prisma.v2ScheduleAssignment.findMany({
+        where: { periodId: dto.periodId, workDate, employeeId: dto.employeeId },
+        select: { id: true, isRest: true, overtime: true }
       })
     ]);
-    if (!shift || !employment)
+    if (
+      (!dto.isRest && !shift) ||
+      !employment ||
+      (dto.overtime && !overtimePosition)
+    )
       throw new BadRequestException('班次或员工岗位不属于排班门店');
+    if (existing.some((item) => item.overtime === Boolean(dto.overtime)))
+      throw new BadRequestException(
+        dto.overtime ? '该员工当日已有加班安排' : '该员工当日已排班或休息'
+      );
+    if (dto.overtime && existing.some((item) => !item.overtime && !item.isRest))
+      throw new BadRequestException('当日在班员工不能再安排加班');
+    if (!dto.overtime && !dto.isRest && existing.some((item) => item.overtime))
+      throw new BadRequestException('该员工当日已有加班安排');
     return this.prisma.v2ScheduleAssignment.create({
-      data: { ...dto, workDate, createdBy: user.id, updatedBy: user.id }
+      data: {
+        periodId: dto.periodId,
+        workDate,
+        shiftId: dto.isRest ? null : dto.shiftId,
+        employeeId: dto.employeeId,
+        positionId: dto.positionId,
+        isRest: Boolean(dto.isRest),
+        overtime: Boolean(dto.overtime),
+        note: dto.note,
+        createdBy: user.id,
+        updatedBy: user.id
+      }
     });
   }
 
-  async deleteAssignment(id: string) {
+  async applyScheduleCycle(
+    id: string,
+    dto: ApplyV2ScheduleCycleDto,
+    user: CurrentUser
+  ) {
+    if (!dto.employmentIds.length || dto.employmentIds.length > 30)
+      throw new BadRequestException('请选择 1 至 30 名员工');
+    if (!dto.cycle.length || dto.cycle.length > 31)
+      throw new BadRequestException('排班循环必须包含 1 至 31 天');
+    if (dto.cycle.some((value) => value !== null && typeof value !== 'string'))
+      throw new BadRequestException('排班循环只能包含班次或休息');
+    return this.prisma.$transaction(
+      async (tx) => {
+        const period = await tx.v2SchedulePeriod.findUnique({ where: { id } });
+        if (!period || period.status !== 'DRAFT')
+          throw new BadRequestException('仅草稿排班可批量套用循环');
+        this.assertScheduleStore(user, period.storeId);
+        const employments = await tx.v2Employment.findMany({
+          where: {
+            id: { in: dto.employmentIds },
+            storeId: period.storeId,
+            endedOn: null,
+            deletedAt: null
+          },
+          select: {
+            id: true,
+            employeeId: true,
+            positionId: true,
+            startedOn: true,
+            endedOn: true
+          }
+        });
+        if (employments.length !== new Set(dto.employmentIds).size)
+          throw new BadRequestException('部分员工岗位已失效或不属于本店');
+        const shiftIds = [
+          ...new Set(
+            dto.cycle.filter((value): value is string => Boolean(value))
+          )
+        ];
+        const shifts = shiftIds.length
+          ? await tx.v2StoreShift.findMany({
+              where: {
+                id: { in: shiftIds },
+                storeId: period.storeId,
+                enabled: true,
+                deletedAt: null
+              },
+              select: { id: true }
+            })
+          : [];
+        if (shifts.length !== shiftIds.length)
+          throw new BadRequestException('循环中包含无效班次');
+        const protectedCount = await tx.v2ScheduleAssignment.count({
+          where: {
+            periodId: id,
+            employeeId: { in: employments.map((item) => item.employeeId) },
+            overtime: false,
+            OR: [
+              { lockedAt: { not: null } },
+              { attendancePunches: { some: {} } },
+              { attendanceCorrections: { some: {} } }
+            ]
+          }
+        });
+        if (protectedCount)
+          throw new BadRequestException(
+            '选中员工已有锁定排班或考勤记录，不能批量覆盖'
+          );
+        await tx.v2ScheduleAssignment.deleteMany({
+          where: {
+            periodId: id,
+            employeeId: { in: employments.map((item) => item.employeeId) },
+            overtime: false
+          }
+        });
+        const starts = period.startsOn.getTime();
+        const days =
+          Math.floor((period.endsOn.getTime() - starts) / 86_400_000) + 1;
+        const ordered = dto.employmentIds.map((employmentId) =>
+          employments.find((item) => item.id === employmentId)!
+        );
+        const rows = ordered.flatMap((employment, employeeIndex) => {
+          return Array.from({ length: days }, (_, dayIndex) => {
+            const workDate = new Date(starts + dayIndex * 86_400_000);
+            if (
+              workDate < employment.startedOn ||
+              (employment.endedOn && workDate > employment.endedOn)
+            )
+              return null;
+            const shiftId = scheduleCycleValue(
+              dto.cycle,
+              dayIndex,
+              employeeIndex,
+              ordered.length,
+              Boolean(dto.stagger)
+            );
+            return {
+              periodId: id,
+              workDate,
+              shiftId,
+              employeeId: employment.employeeId,
+              positionId: employment.positionId,
+              isRest: !shiftId,
+              overtime: false,
+              createdBy: user.id,
+              updatedBy: user.id
+            };
+          }).filter((row): row is NonNullable<typeof row> => Boolean(row));
+        });
+        await tx.v2ScheduleAssignment.createMany({ data: rows });
+        return { created: rows.length, employees: ordered.length, days };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  }
+
+  async copyPreviousSchedule(id: string, user: CurrentUser) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const target = await tx.v2SchedulePeriod.findUnique({ where: { id } });
+        if (!target || target.status !== 'DRAFT')
+          throw new BadRequestException('仅草稿排班可复制上月安排');
+        this.assertScheduleStore(user, target.storeId);
+        const source = await tx.v2SchedulePeriod.findFirst({
+          where: {
+            storeId: target.storeId,
+            endsOn: { lt: target.startsOn },
+            status: { in: ['PUBLISHED', 'LOCKED'] }
+          },
+          orderBy: { endsOn: 'desc' },
+          include: {
+            assignments: {
+              where: { overtime: false },
+              include: { employee: { select: { name: true } } },
+              orderBy: [{ workDate: 'asc' }, { employeeId: 'asc' }]
+            }
+          }
+        });
+        if (!source?.assignments.length)
+          throw new BadRequestException('未找到可沿用的已发布历史排班');
+        const [employments, successions] = await Promise.all([
+          tx.v2Employment.findMany({
+            where: {
+              storeId: target.storeId,
+              deletedAt: null,
+              startedOn: { lte: target.endsOn },
+              OR: [{ endedOn: null }, { endedOn: { gte: target.startsOn } }]
+            },
+            select: {
+              id: true,
+              employeeId: true,
+              positionId: true,
+              startedOn: true,
+              endedOn: true
+            }
+          }),
+          tx.v2ScheduleSuccession.findMany({
+            where: {
+              storeId: target.storeId,
+              effectiveFrom: { lte: target.endsOn }
+            }
+          })
+        ]);
+        const employmentById = new Map(
+          employments.map((item) => [item.id, item])
+        );
+        const successionByEmployee = new Map(
+          successions.map((item) => [item.predecessorEmployeeId, item])
+        );
+        const sourceDays =
+          Math.floor(
+            (source.endsOn.getTime() - source.startsOn.getTime()) / 86_400_000
+          ) + 1;
+        const targetDays =
+          Math.floor(
+            (target.endsOn.getTime() - target.startsOn.getTime()) / 86_400_000
+          ) + 1;
+        const byOffset = new Map<number, typeof source.assignments>();
+        for (const item of source.assignments) {
+          const offset = Math.floor(
+            (item.workDate.getTime() - source.startsOn.getTime()) / 86_400_000
+          );
+          const rows = byOffset.get(offset) ?? [];
+          rows.push(item);
+          byOffset.set(offset, rows);
+        }
+        const missing = new Set<string>();
+        const targetKeys = new Set<string>();
+        const rows = Array.from({ length: targetDays }).flatMap(
+          (_, dayIndex) => {
+            const sourceRows =
+              byOffset.get(sourceOffsetForTargetDay(dayIndex, sourceDays)) ??
+              [];
+            return sourceRows.flatMap((item) => {
+              const workDate = new Date(
+                target.startsOn.getTime() + dayIndex * 86_400_000
+              );
+              const directEmployment = employments.find(
+                (employment) =>
+                  employment.employeeId === item.employeeId &&
+                  employment.positionId === item.positionId &&
+                  employment.startedOn <= workDate &&
+                  (!employment.endedOn || employment.endedOn >= workDate)
+              );
+              const succession = successionByEmployee.get(item.employeeId);
+              const successor =
+                succession && succession.effectiveFrom <= workDate
+                  ? employmentById.get(succession.successorEmploymentId)
+                  : undefined;
+              const employment =
+                directEmployment ??
+                (successor &&
+                successor.startedOn <= workDate &&
+                (!successor.endedOn || successor.endedOn >= workDate)
+                  ? successor
+                  : undefined);
+              if (!employment) {
+                missing.add(item.employee.name);
+                return [];
+              }
+              const key = `${employment.employeeId}:${workDate.toISOString().slice(0, 10)}`;
+              if (targetKeys.has(key))
+                throw new BadRequestException(
+                  '多个历史岗位被继承给同一员工，请先调整工作继承'
+                );
+              targetKeys.add(key);
+              return [
+                {
+                  periodId: target.id,
+                  workDate,
+                  shiftId: item.shiftId,
+                  employeeId: employment.employeeId,
+                  positionId: employment.positionId,
+                  isRest: item.isRest,
+                  overtime: false,
+                  note: item.note,
+                  createdBy: user.id,
+                  updatedBy: user.id
+                }
+              ];
+            });
+          }
+        );
+        if (missing.size)
+          throw new BadRequestException(
+            `请先为离职员工设置工作继承：${[...missing].join('、')}`
+          );
+        const protectedCount = await tx.v2ScheduleAssignment.count({
+          where: {
+            periodId: target.id,
+            overtime: false,
+            OR: [
+              { lockedAt: { not: null } },
+              { attendancePunches: { some: {} } },
+              { attendanceCorrections: { some: {} } }
+            ]
+          }
+        });
+        if (protectedCount)
+          throw new BadRequestException(
+            '当前排班已有锁定或考勤记录，不能整月覆盖'
+          );
+        await tx.v2ScheduleAssignment.deleteMany({
+          where: { periodId: target.id, overtime: false }
+        });
+        await tx.v2ScheduleAssignment.createMany({ data: rows });
+        return { sourcePeriodId: source.id, created: rows.length };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  }
+
+  async updateAssignment(
+    id: string,
+    dto: UpdateV2ScheduleAssignmentDto,
+    user: CurrentUser
+  ) {
     const assignment = await this.prisma.v2ScheduleAssignment.findUnique({
       where: { id },
-      include: { period: true, _count: { select: { attendancePunches: true, attendanceCorrections: true } } }
+      include: {
+        period: true,
+        _count: {
+          select: { attendancePunches: true, attendanceCorrections: true }
+        }
+      }
     });
     if (
       !assignment ||
@@ -2703,26 +3278,115 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
       assignment.lockedAt
     )
       throw new BadRequestException('排班不存在或已锁定');
-    if (assignment._count.attendancePunches || assignment._count.attendanceCorrections)
+    this.assertScheduleStore(user, assignment.period.storeId);
+    if (
+      assignment._count.attendancePunches ||
+      assignment._count.attendanceCorrections
+    )
+      throw new BadRequestException('已有打卡或补卡记录的排班不可修改');
+    if (dto.isRest && dto.shiftId)
+      throw new BadRequestException('休息日不能同时设置班次');
+    if (assignment.overtime && dto.isRest)
+      throw new BadRequestException('加班安排不能改为休息日');
+    if (!dto.isRest && !dto.shiftId)
+      throw new BadRequestException('上班请选择班次');
+    if (dto.shiftId) {
+      const shift = await this.prisma.v2StoreShift.findFirst({
+        where: {
+          id: dto.shiftId,
+          storeId: assignment.period.storeId,
+          enabled: true,
+          deletedAt: null
+        },
+        select: { id: true }
+      });
+      if (!shift) throw new BadRequestException('班次不属于排班门店');
+    }
+    if (assignment.overtime && dto.positionId) {
+      const position = await this.prisma.v2StorePosition.findFirst({
+        where: {
+          id: dto.positionId,
+          storeId: assignment.period.storeId,
+          enabled: true,
+          deletedAt: null
+        },
+        select: { id: true }
+      });
+      if (!position) throw new BadRequestException('加班岗位不属于排班门店');
+    }
+    return this.prisma.v2ScheduleAssignment.update({
+      where: { id },
+      data: {
+        shiftId: dto.isRest ? null : dto.shiftId,
+        positionId: assignment.overtime
+          ? (dto.positionId ?? assignment.positionId)
+          : assignment.positionId,
+        isRest: Boolean(dto.isRest),
+        note: dto.note?.trim() || null,
+        updatedBy: user.id
+      }
+    });
+  }
+
+  async deleteAssignment(id: string, user: CurrentUser) {
+    const assignment = await this.prisma.v2ScheduleAssignment.findUnique({
+      where: { id },
+      include: {
+        period: true,
+        _count: {
+          select: { attendancePunches: true, attendanceCorrections: true }
+        }
+      }
+    });
+    if (
+      !assignment ||
+      assignment.period.status === 'LOCKED' ||
+      assignment.lockedAt
+    )
+      throw new BadRequestException('排班不存在或已锁定');
+    this.assertScheduleStore(user, assignment.period.storeId);
+    if (
+      assignment._count.attendancePunches ||
+      assignment._count.attendanceCorrections
+    )
       throw new BadRequestException('已有打卡或补卡记录的排班不可删除');
     try {
       return await this.prisma.v2ScheduleAssignment.delete({ where: { id } });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2003'
+      ) {
         throw new BadRequestException('已有打卡或补卡记录的排班不可删除');
       }
       throw error;
     }
   }
 
-  publishSchedule(id: string) {
+  async publishSchedule(id: string, user: CurrentUser) {
+    const period = await this.prisma.v2SchedulePeriod.findUnique({
+      where: { id },
+      select: { storeId: true }
+    });
+    if (!period) throw new NotFoundException('排班周期不存在');
+    this.assertScheduleStore(user, period.storeId);
+    const empty = await this.prisma.v2ScheduleAssignment.count({
+      where: { periodId: id }
+    });
+    if (!empty) throw new BadRequestException('请先完成排班再发布');
     return this.prisma.v2SchedulePeriod.update({
       where: { id },
       data: { status: 'PUBLISHED', publishedAt: new Date() }
     });
   }
 
-  async lockSchedule(id: string) {
+  async lockSchedule(id: string, user: CurrentUser) {
+    const period = await this.prisma.v2SchedulePeriod.findUnique({
+      where: { id },
+      select: { storeId: true }
+    });
+    if (!period) throw new NotFoundException('排班周期不存在');
+    this.assertScheduleStore(user, period.storeId);
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
       await tx.v2ScheduleAssignment.updateMany({
@@ -2734,6 +3398,14 @@ export class V2OperationsService implements OnModuleInit, OnModuleDestroy {
         data: { status: 'LOCKED', lockedAt: now }
       });
     });
+  }
+
+  private assertScheduleStore(user: CurrentUser, storeId: string) {
+    if (
+      !user.roles.includes('super_admin') &&
+      !user.accessibleStoreIds.includes(storeId)
+    )
+      throw new ForbiddenException('无权管理该门店排班');
   }
 
   createTarget(dto: CreateV2OperatingTargetDto, user: CurrentUser) {

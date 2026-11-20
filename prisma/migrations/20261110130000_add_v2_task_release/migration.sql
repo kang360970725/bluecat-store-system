@@ -4,3 +4,4 @@ ALTER TABLE `v2_operational_task_reopens` ADD COLUMN `action` ENUM('RETURN', 'RE
 
 -- AlterTable
 ALTER TABLE `v2_operational_task_notifications` MODIFY `kind` ENUM('RELEASED', 'CC', 'SUBMITTED', 'COMPLETED', 'RETURNED') NOT NULL;
+

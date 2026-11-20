@@ -318,8 +318,10 @@ export type V2EmployeeItem = {
 export const getV2Employees = (filters?: {
   storeId?: string;
   organizationId?: string;
+  allStores?: boolean;
 }) => {
   const params = new URLSearchParams();
+  if (filters?.allStores) params.set('allStores', 'true');
   if (filters?.storeId) params.set('storeId', filters.storeId);
   if (filters?.organizationId)
     params.set('organizationId', filters.organizationId);
@@ -493,6 +495,7 @@ export type V2AccessControl = {
     displayName: string;
     status: string;
     dataScope: string;
+    usesAccountRoles: boolean;
     employee?: { id: string; name: string; employeeNo: string } | null;
     roles: Array<{ role: { id: string; name: string; code: string } }>;
   }>;
@@ -500,6 +503,7 @@ export type V2AccessControl = {
     id: string;
     name: string;
     code: string;
+    enabled: boolean;
     description?: string | null;
     permissions: Array<{
       permission: { id: string; code: string; name: string; module: string };
@@ -512,6 +516,10 @@ export type V2AccessControl = {
     module: string;
   }>;
 };
+export type V2RoleCatalog = Pick<V2AccessControl, 'roles' | 'permissions'>;
+export const getV2RoleCatalog = () =>
+  request<V2RoleCatalog>('/v2/master-data/roles');
+
 export const getV2AccessControl = () =>
   request<V2AccessControl>('/v2/master-data/access-control');
 export interface V2EffectivePermissions {
@@ -535,7 +543,7 @@ export const getV2EffectivePermissions = (id: string) =>
 export const getV2RolePermissionAudit = (id: string) =>
   request<V2RolePermissionAudit[]>(`/v2/master-data/roles/${encodeURIComponent(id)}/permission-audit`);
 export type V2AccountScopeMode = 'EMPLOYEE_STORE' | 'ASSIGNED_STORES' | 'ALL_STORES';
-export type V2AuthorizationSnapshot = { roleId?: string | null; dataScope?: V2AccountScopeMode; storeIds?: string[] };
+export type V2AuthorizationSnapshot = { roleId?: string | null; roleIds?: string[]; usesAccountRoles?: boolean; dataScope?: V2AccountScopeMode; storeIds?: string[] };
 export interface V2AuthorizationAudit {
   id: string;
   subject: 'POSITION_TEMPLATE' | 'ACCOUNT_SCOPE';
@@ -567,9 +575,16 @@ export const createV2Account = (body: Record<string, unknown>) =>
     body: JSON.stringify(body)
   });
 
+export const updateV2AccountRoles = (id: string, roleIds: string[]) =>
+  request<{ usesAccountRoles: boolean; roleIds: string[] }>(
+    `/v2/master-data/accounts/${encodeURIComponent(id)}/roles`,
+    { method: 'PATCH', body: JSON.stringify({ roleIds }) }
+  );
+
 export type V2LoginUser = {
   id: string;
   accountType: 'LEGACY_USER' | 'V2_ACCOUNT';
+  usesAccountRoles?: boolean;
   username: string;
   displayName: string;
   status: string;

@@ -139,6 +139,12 @@ export class CreateV2EmployeeDto {
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  loginNickname?: string;
   @ApiPropertyOptional({ enum: V2EmployeeStatus })
   @IsOptional()
   @IsEnum(V2EmployeeStatus)
@@ -164,11 +170,6 @@ export class CreateV2EmployeeDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  @MaxLength(60)
-  loginUsername?: string;
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
   @MinLength(6)
   @MaxLength(100)
   loginPassword?: string;
@@ -176,6 +177,8 @@ export class CreateV2EmployeeDto {
   @IsOptional()
   @IsArray()
   @IsString({ each: true })
+  @ArrayMaxSize(100)
+  @MaxLength(100, { each: true })
   loginRoleIds?: string[];
   @ApiPropertyOptional()
   @IsOptional()
@@ -212,6 +215,12 @@ export class UpdateV2EmployeeDto {
   @IsString()
   @MaxLength(30)
   phone?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  loginNickname?: string;
   @ApiPropertyOptional() @IsOptional() @IsDateString() hiredOn?: string;
   @ApiPropertyOptional()
   @IsOptional()
@@ -222,6 +231,20 @@ export class UpdateV2EmployeeDto {
   @IsOptional()
   @IsDateString()
   gradeEffectiveOn?: string;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  loginRoleIds?: string[];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(8)
+  @MaxLength(100)
+  loginPassword?: string;
 }
 
 export class CreateV2EmployeePayrollProfileDto {
@@ -561,6 +584,14 @@ export class CreateV2AccountDto {
   @IsArray()
   @IsString({ each: true })
   storeIds?: string[];
+}
+
+export class UpdateV2AccountRolesDto {
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  roleIds!: string[];
 }
 
 export class UpdateV2AccountScopeDto {

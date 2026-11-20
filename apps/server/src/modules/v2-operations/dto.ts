@@ -39,7 +39,7 @@ export class CreateV2SchedulePeriodDto {
 export class CreateV2ScheduleAssignmentDto {
   @ApiProperty() @IsString() periodId!: string;
   @ApiProperty() @IsDateString() workDate!: string;
-  @ApiProperty() @IsString() shiftId!: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() shiftId?: string;
   @ApiProperty() @IsString() employeeId!: string;
   @ApiProperty() @IsString() positionId!: string;
   @ApiPropertyOptional()
@@ -47,6 +47,52 @@ export class CreateV2ScheduleAssignmentDto {
   @IsString()
   @MaxLength(500)
   note?: string;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() isRest?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() overtime?: boolean;
+}
+
+export class UpdateV2ScheduleAssignmentDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() shiftId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() positionId?: string;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() isRest?: boolean;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+export class SaveV2StoreShiftDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() id?: string;
+  @ApiProperty() @IsString() @MaxLength(60) name!: string;
+  @ApiProperty()
+  @IsString()
+  @MaxLength(40)
+  @Matches(/^[A-Za-z0-9_-]+$/)
+  code!: string;
+  @ApiProperty() @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) startsAt!: string;
+  @ApiProperty() @Matches(/^([01]\d|2[0-3]):[0-5]\d$/) endsAt!: string;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() spansNextDay?: boolean;
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  sort?: number;
+}
+
+export class ApplyV2ScheduleCycleDto {
+  @ApiProperty() @IsArray() @IsString({ each: true }) employmentIds!: string[];
+  @ApiProperty()
+  @IsArray()
+  @ValidateIf((_, value) => Array.isArray(value))
+  cycle!: Array<string | null>;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() stagger?: boolean;
+}
+
+export class SaveV2ScheduleSuccessionDto {
+  @ApiProperty() @IsString() predecessorEmployeeId!: string;
+  @ApiProperty() @IsString() successorEmploymentId!: string;
+  @ApiProperty() @IsDateString() effectiveFrom!: string;
 }
 
 export class CreateV2OperatingTargetDto {

@@ -15,7 +15,8 @@ const V2UsageAnalyticsView = () =>
   import('@/views/v2/V2UsageAnalyticsView.vue');
 const V2EmployeeCenterView = () =>
   import('@/views/v2/V2EmployeeCenterView.vue');
-const V2LoginUsersView = () => import('@/views/v2/V2LoginUsersView.vue');
+const V2RolesPermissionsView = () =>
+  import('@/views/v2/V2RolesPermissionsView.vue');
 const V2PayrollGradesView = () => import('@/views/v2/V2PayrollGradesView.vue');
 const ChangePasswordView = () => import('@/views/ChangePasswordView.vue');
 const V2ScheduleEditorView = () =>
@@ -52,6 +53,12 @@ export const router = createRouter({
         {
           path: 'v2-foundation',
           redirect: '/v2/stores'
+        },
+        {
+          path: 'v2/attendance-settings',
+          name: 'v2-attendance-settings',
+          component: () => import('@/views/v2/V2AttendanceTerminalsView.vue'),
+          meta: { superAdminOnly: true }
         },
         {
           path: 'v2/operational-tasks/report',
@@ -123,9 +130,10 @@ export const router = createRouter({
           component: V2EmployeeCenterView
         },
         {
-          path: 'v2/settings/login-users',
-          name: 'v2-login-users',
-          component: V2LoginUsersView
+          path: 'v2/settings/roles',
+          alias: 'v2/settings/login-users',
+          name: 'v2-roles-permissions',
+          component: V2RolesPermissionsView
         },
         {
           path: 'v2/settings/payroll-grades',
@@ -169,6 +177,14 @@ router.beforeEach((to) => {
   if (to.path === '/login' && auth.isAuthenticated) {
     return '/';
   }
+  if (
+    to.name === 'v2-store-workspace' &&
+    auth.user &&
+    !auth.user.roles.includes('super_admin') &&
+    (!auth.user.permissions.includes('store:view') ||
+      !auth.user.accessibleStoreIds.includes(String(to.params.storeId)))
+  )
+    return { name: 'v2-store-center', query: to.query };
   if (to.meta.superAdminOnly && !auth.user?.roles.includes('super_admin'))
     return '/v2/stores';
   const permission =

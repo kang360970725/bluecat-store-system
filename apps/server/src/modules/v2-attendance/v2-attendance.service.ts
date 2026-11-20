@@ -1,5 +1,11 @@
 import { chinaCsvTime, csvRow } from '../../common/csv';
 import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes
+} from 'node:crypto';
+import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
@@ -7,9 +13,11 @@ import {
   ServiceUnavailableException,
   UnauthorizedException
 } from '@nestjs/common';
+import { AuthService } from '../auth/auth.service';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, type V2AttendancePunchKind } from '@prisma/client';
 import { compare } from 'bcryptjs';
+import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import { resolveScopedPermission } from '../../common/scoped-permission';
 import { PrismaService } from '../../database/prisma.service';
 import {
@@ -50,8 +58,126 @@ const attendanceRecordSelect = {
 export class V2AttendanceService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService
+    private readonly config: ConfigService,
+    private readonly auth: AuthService
   ) {}
+
+  async settings(accountId: string) {
+    await this.requireAdmin(accountId);
+    const settings = await this.prisma.v2AttendanceSettings.findUnique({
+      where: { id: 1 }
+    });
+    return {
+      appId:
+        settings?.appId ??
+        this.config.get<string>('ATTENDANCE_WECHAT_APP_ID') ??
+        '',
+      hasAppSecret: Boolean(
+        settings?.appSecretCipher ??
+        this.config.get<string>('ATTENDANCE_WECHAT_APP_SECRET')
+      ),
+      clockInEarly:
+        settings?.clockInEarly ??
+        this.environmentWindow('ATTENDANCE_CLOCK_IN_EARLY_MINUTES'),
+      clockOutLate:
+        settings?.clockOutLate ??
+        this.environmentWindow('ATTENDANCE_CLOCK_OUT_LATE_MINUTES')
+    };
+  }
+
+  async saveSettings(
+    accountId: string,
+    input: {
+      appId: string;
+      appSecret?: string;
+      clockInEarly: number;
+      clockOutLate: number;
+    }
+  ) {
+    await this.requireAdmin(accountId);
+    await this.prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.v2AttendanceSettings.findUnique({
+          where: { id: 1 }
+        });
+        const priorAppId =
+          existing?.appId ??
+          this.config.get<string>('ATTENDANCE_WECHAT_APP_ID');
+        if (!input.appSecret && input.appId !== priorAppId)
+          throw new BadRequestException(
+            '首次配置或更换 AppID 时请填写 AppSecret'
+          );
+        const secret =
+          input.appSecret ??
+          (existing
+            ? undefined
+            : this.config.get<string>('ATTENDANCE_WECHAT_APP_SECRET'));
+        const appSecretCipher = secret
+          ? this.encryptSetting(secret)
+          : existing?.appSecretCipher;
+        if (!appSecretCipher) throw new BadRequestException('请填写 AppSecret');
+        const signingKeyCipher =
+          existing?.signingKeyCipher ??
+          this.encryptSetting(randomBytes(32).toString('hex'));
+        const data = {
+          appId: input.appId,
+          appSecretCipher,
+          signingKeyCipher,
+          clockInEarly: input.clockInEarly,
+          clockOutLate: input.clockOutLate,
+          updatedBy: accountId
+        };
+        await tx.v2AttendanceSettings.upsert({
+          where: { id: 1 },
+          create: { id: 1, ...data },
+          update: data
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+    return this.settings(accountId);
+  }
+
+  private environmentWindow(name: string) {
+    const value = this.config.get<string>(name);
+    return value && /^\d{1,3}$/.test(value) ? Number(value) : null;
+  }
+
+  private settingsKey() {
+    return createHmac('sha256', this.config.getOrThrow<string>('jwt.secret'))
+      .update('bluecat-attendance-settings-v1')
+      .digest();
+  }
+
+  private encryptSetting(value: string) {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.settingsKey(), iv);
+    const encrypted = Buffer.concat([
+      cipher.update(value, 'utf8'),
+      cipher.final()
+    ]);
+    return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString(
+      'base64'
+    );
+  }
+
+  private decryptSetting(value: string) {
+    const data = Buffer.from(value, 'base64');
+    try {
+      const decipher = createDecipheriv(
+        'aes-256-gcm',
+        this.settingsKey(),
+        data.subarray(0, 12)
+      );
+      decipher.setAuthTag(data.subarray(12, 28));
+      return Buffer.concat([
+        decipher.update(data.subarray(28)),
+        decipher.final()
+      ]).toString('utf8');
+    } catch {
+      throw new ServiceUnavailableException('考勤配置无法解密，请联系管理员');
+    }
+  }
 
   async wifiNetworks(accountId: string, storeId: string) {
     await this.requireStorePermission(accountId, storeId, 'schedule:update');
@@ -153,6 +279,19 @@ export class V2AttendanceService {
     return { bound: true };
   }
 
+  async openWechatSession(wechatCode: string) {
+    const subject = await this.wechatSubject(wechatCode);
+    const binding = await this.prisma.v2AttendanceWechatBinding.findUnique({
+      where: { subject },
+      select: { createdAt: true, accountId: true }
+    });
+    if (!binding) throw new UnauthorizedException('请先绑定员工账号');
+    return this.auth.openWechatSession(
+      binding.accountId,
+      binding.createdAt.toISOString()
+    );
+  }
+
   async assignments(wechatCode: string, workDate?: string) {
     const employeeId = await this.employeeFor(
       await this.wechatSubject(wechatCode)
@@ -170,6 +309,8 @@ export class V2AttendanceService {
       select: {
         id: true,
         workDate: true,
+        overtime: true,
+        position: { select: { name: true } },
         period: {
           select: { storeId: true, store: { select: { name: true } } }
         },
@@ -204,12 +345,19 @@ export class V2AttendanceService {
     bssid: string,
     kind: V2AttendancePunchKind
   ) {
-    const window = this.config.get<string>(
-      kind === 'IN'
-        ? 'ATTENDANCE_CLOCK_IN_EARLY_MINUTES'
-        : 'ATTENDANCE_CLOCK_OUT_LATE_MINUTES'
-    );
-    if (!/^\d{1,3}$/.test(window ?? ''))
+    const settings = await this.prisma.v2AttendanceSettings.findUnique({
+      where: { id: 1 }
+    });
+    const window = settings
+      ? kind === 'IN'
+        ? settings.clockInEarly
+        : settings.clockOutLate
+      : this.environmentWindow(
+          kind === 'IN'
+            ? 'ATTENDANCE_CLOCK_IN_EARLY_MINUTES'
+            : 'ATTENDANCE_CLOCK_OUT_LATE_MINUTES'
+        );
+    if (window === null)
       throw new ServiceUnavailableException('尚未配置打卡时间窗口');
 
     const normalizedBssid = normalizeBssid(bssid);
@@ -224,7 +372,11 @@ export class V2AttendanceService {
           attendancePunches: { where: { kind } }
         }
       });
-      if (!assignment || assignment.shift.storeId !== assignment.period.storeId)
+      if (
+        !assignment ||
+        !assignment.shift ||
+        assignment.shift.storeId !== assignment.period.storeId
+      )
         throw new ForbiddenException('无权为该排班打卡');
 
       const network = await tx.v2AttendanceWifiNetwork.findFirst({
@@ -304,7 +456,8 @@ export class V2AttendanceService {
         where: { id: assignmentId, ...this.assignmentScope(employeeId) },
         include: { shift: true, attendancePunches: { where: { kind } } }
       });
-      if (!assignment) throw new ForbiddenException('无权为该班次申请补卡');
+      if (!assignment?.shift)
+        throw new ForbiddenException('无权为该班次申请补卡');
       const { starts, ends } = shiftBounds(
         assignment.workDate,
         assignment.shift
@@ -357,6 +510,8 @@ export class V2AttendanceService {
       this.prisma.v2ScheduleAssignment.findMany({
         where: {
           workDate: new Date(workDate),
+          isRest: false,
+          shiftId: { not: null },
           period: {
             status: { in: ['PUBLISHED', 'LOCKED'] },
             store: { deletedAt: null },
@@ -429,6 +584,8 @@ export class V2AttendanceService {
         return tx.v2ScheduleAssignment.findMany({
           where: {
             workDate: { gte: first, lt: end },
+            isRest: false,
+            shiftId: { not: null },
             period: {
               status: { in: ['PUBLISHED', 'LOCKED'] },
               store: { deletedAt: null },
@@ -462,6 +619,7 @@ export class V2AttendanceService {
       '下班来源'
     ]);
     const records = rows.map((row) => {
+      if (!row.shift) throw new BadRequestException('排班班次数据不完整');
       const clockIn = row.attendancePunches.find(
         (punch) => punch.kind === 'IN'
       );
@@ -657,6 +815,8 @@ export class V2AttendanceService {
   ): Prisma.V2ScheduleAssignmentWhereInput {
     return {
       employeeId,
+      isRest: false,
+      shiftId: { not: null },
       period: { status: { in: ['PUBLISHED', 'LOCKED'] }, store: operatingStore }
     };
   }
@@ -710,9 +870,20 @@ export class V2AttendanceService {
     return access;
   }
 
+  private async requireAdmin(accountId: string) {
+    if (!(await isLiveSuperAdmin(this.prisma, accountId)))
+      throw new ForbiddenException('仅超级管理员可管理考勤试点');
+  }
+
   private async wechatSubject(code: string) {
-    const appid = this.config.get<string>('ATTENDANCE_WECHAT_APP_ID');
-    const secret = this.config.get<string>('ATTENDANCE_WECHAT_APP_SECRET');
+    const settings = await this.prisma.v2AttendanceSettings.findUnique({
+      where: { id: 1 }
+    });
+    const appid =
+      settings?.appId ?? this.config.get<string>('ATTENDANCE_WECHAT_APP_ID');
+    const secret = settings
+      ? this.decryptSetting(settings.appSecretCipher)
+      : this.config.get<string>('ATTENDANCE_WECHAT_APP_SECRET');
     if (!appid || !secret)
       throw new ServiceUnavailableException('员工小程序尚未配置');
     const url = new URL('https://api.weixin.qq.com/sns/jscode2session');

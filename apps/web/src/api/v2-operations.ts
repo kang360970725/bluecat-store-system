@@ -92,7 +92,16 @@ export type V2ScheduleDetail = {
     workDate: string;
     lockedAt?: string | null;
     note?: string | null;
-    shift: { id: string; name: string; startsAt: string; endsAt: string };
+    isRest: boolean;
+    overtime: boolean;
+    shift: {
+      id: string;
+      name: string;
+      code: string;
+      startsAt: string;
+      endsAt: string;
+      spansNextDay: boolean;
+    } | null;
     employee: { id: string; name: string; employeeNo: string };
     position: { id: string; name: string; code: string };
   }>;
@@ -104,11 +113,23 @@ export type V2ScheduleOptions = {
     code: string;
     startsAt: string;
     endsAt: string;
+    spansNextDay: boolean;
   }>;
   employments: Array<{
     id: string;
+    startedOn: string;
+    endedOn?: string | null;
     employee: { id: string; name: string; employeeNo: string; status: string };
     position: { id: string; name: string; code: string };
+  }>;
+  positions: Array<{ id: string; name: string; code: string }>;
+  formerEmployees: Array<{ id: string; name: string; employeeNo: string }>;
+  successions: Array<{
+    id: string;
+    predecessorEmployeeId: string;
+    successorEmploymentId: string;
+    effectiveFrom: string;
+    successorEmployment: V2ScheduleOptions['employments'][number] | null;
   }>;
 };
 export const getV2Schedule = (id: string) =>
@@ -124,10 +145,76 @@ export const createV2ScheduleAssignment = (body: Record<string, unknown>) =>
   });
 export const deleteV2ScheduleAssignment = (id: string) =>
   request(`/v2/operations/schedule-assignments/${id}`, { method: 'DELETE' });
+export const updateV2ScheduleAssignment = (
+  id: string,
+  body: Record<string, unknown>
+) =>
+  request(`/v2/operations/schedule-assignments/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body)
+  });
 export const publishV2Schedule = (id: string) =>
   request(`/v2/operations/schedules/${id}/publish`, { method: 'POST' });
 export const lockV2Schedule = (id: string) =>
   request(`/v2/operations/schedules/${id}/lock`, { method: 'POST' });
+export type V2SchedulePeriodSummary = {
+  id: string;
+  storeId: string;
+  startsOn: string;
+  endsOn: string;
+  status: 'DRAFT' | 'PUBLISHED' | 'LOCKED';
+  publishedAt?: string | null;
+  _count: { assignments: number };
+};
+export const getV2StoreSchedules = (storeId: string, month?: string) =>
+  request<V2SchedulePeriodSummary[]>(
+    `/v2/operations/stores/${encodeURIComponent(storeId)}/schedules${month ? `?month=${encodeURIComponent(month)}` : ''}`
+  );
+export const saveV2StoreShift = (
+  storeId: string,
+  body: Record<string, unknown>
+) =>
+  request(`/v2/operations/stores/${encodeURIComponent(storeId)}/shifts`, {
+    method: 'PUT',
+    body: JSON.stringify(body)
+  });
+export const deleteV2StoreShift = (storeId: string, shiftId: string) =>
+  request(
+    `/v2/operations/stores/${encodeURIComponent(storeId)}/shifts/${encodeURIComponent(shiftId)}`,
+    {
+      method: 'DELETE'
+    }
+  );
+export const applyV2ScheduleCycle = (
+  id: string,
+  body: Record<string, unknown>
+) =>
+  request(`/v2/operations/schedules/${encodeURIComponent(id)}/apply-cycle`, {
+    method: 'POST',
+    body: JSON.stringify(body)
+  });
+export const copyPreviousV2Schedule = (id: string) =>
+  request(`/v2/operations/schedules/${encodeURIComponent(id)}/copy-previous`, {
+    method: 'POST'
+  });
+export const saveV2ScheduleSuccession = (
+  storeId: string,
+  body: Record<string, unknown>
+) =>
+  request(
+    `/v2/operations/stores/${encodeURIComponent(storeId)}/schedule-successions`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }
+  );
+export const deleteV2ScheduleSuccession = (storeId: string, id: string) =>
+  request(
+    `/v2/operations/stores/${encodeURIComponent(storeId)}/schedule-successions/${encodeURIComponent(id)}`,
+    {
+      method: 'DELETE'
+    }
+  );
 export const createV2Target = (body: Record<string, unknown>) =>
   request('/v2/operations/targets', {
     method: 'POST',
@@ -290,9 +377,22 @@ export type V2StorePerformanceRanking = {
     rank: number;
   }>;
 };
-export const getV2StorePerformanceRanking = (month = '') =>
-  request<V2StorePerformanceRanking>(
-    `/v2/operations/store-performance-ranking${month ? `?month=${encodeURIComponent(month)}` : ''}`
+export type V2StoreCenterRanking = Omit<V2StorePerformanceRanking, 'items'> & {
+  summaryScope: 'all' | 'managed' | 'authorized';
+  summaryStoreIds: string[];
+  items: Array<
+    V2StorePerformanceRanking['items'][number] & {
+      id: string;
+      name: string;
+      shortName: string | null;
+      status: string;
+      canOpenWorkspace: boolean;
+    }
+  >;
+};
+export const getV2StoreCenterRanking = (month = '') =>
+  request<V2StoreCenterRanking>(
+    `/v2/operations/store-center-ranking${month ? `?month=${encodeURIComponent(month)}` : ''}`
   );
 export type V2OperatingDashboard = {
   store: V2StorePerformance['store'];

@@ -15,41 +15,6 @@
       </n-space>
     </div>
 
-    <n-card title="角色与权限" :bordered="false">
-      <div class="role-grid">
-        <div
-          v-for="role in access?.roles || []"
-          :key="role.id"
-          class="role-card"
-        >
-          <div>
-            <strong>{{ role.name }}</strong
-            ><n-tag size="small" :bordered="false">{{ role.code }}</n-tag>
-          </div>
-          <p>{{ role.description || '暂无角色说明' }}</p>
-          <div class="role-card-footer">
-            <span>{{ role.permissions.length }} 项权限</span>
-            <n-button
-              size="small"
-              secondary
-              :disabled="role.code === 'super_admin'"
-              @click="openEditRole(role)"
-              >{{
-                role.code === 'super_admin' ? '系统保护' : '编辑权限'
-              }}</n-button
-            >
-            <n-button
-              size="small"
-              text
-              @click="openRoleAudit(role.id, role.name)"
-              >变更记录</n-button
-            >
-          </div>
-        </div>
-        <n-empty v-if="!access?.roles.length" description="暂无角色" />
-      </div>
-    </n-card>
-
     <div class="metric-strip">
       <div>
         <span>可登录用户</span><strong>{{ users.length }}</strong>
@@ -87,11 +52,78 @@
       />
     </n-card>
 
+    <n-card title="角色与权限" :bordered="false">
+      <div class="role-grid">
+        <div
+          v-for="role in access?.roles || []"
+          :key="role.id"
+          class="role-card"
+        >
+          <div>
+            <strong>{{ role.name }}</strong
+            ><n-tag size="small" :bordered="false">{{ role.code }}</n-tag>
+          </div>
+          <p>{{ role.description || '暂无角色说明' }}</p>
+          <div class="role-card-footer">
+            <span>{{ role.permissions.length }} 项权限</span>
+            <n-button
+              size="small"
+              secondary
+              :disabled="role.code === 'super_admin'"
+              @click="openEditRole(role)"
+              >{{
+                role.code === 'super_admin' ? '系统保护' : '编辑权限'
+              }}</n-button
+            >
+            <n-button
+              size="small"
+              text
+              @click="openRoleAudit(role.id, role.name)"
+              >变更记录</n-button
+            >
+          </div>
+        </div>
+        <n-empty v-if="!access?.roles.length" description="暂无角色" />
+      </div>
+    </n-card>
+
+    <n-modal
+      v-model:show="accountRolesOpen"
+      preset="card"
+      class="bc-modal-md"
+      :title="`账号角色 · ${editingAccountRoles?.displayName ?? ''}`"
+      :mask-closable="!accountRolesSaving"
+      content-style="overflow-y: auto;"
+    >
+      <n-space vertical>
+        <n-alert v-if="editingAccountRoles?.usesAccountRoles === false" type="warning">
+          保存后，此账号改用所选角色。角色适用于账号授权的门店，请核对跨店兼岗权限。
+        </n-alert>
+        <n-select
+          v-model:value="selectedAccountRoleIds"
+          multiple
+          filterable
+          placeholder="选择账号角色"
+          :options="assignableAccountRoles"
+          :disabled="accountRolesSaving"
+        />
+      </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button :disabled="accountRolesSaving" @click="accountRolesOpen = false">取消</n-button>
+          <n-button type="primary" :loading="accountRolesSaving" @click="saveAccountRoles">保存角色</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
     <n-modal
       v-model:show="scopeOpen"
       preset="card"
       :title="`门店范围 · ${scopeAccount?.displayName ?? ''}`"
-      class="bc-modal-lg"
+      class="bc-modal-lg scope-modal"
+      :class="{ 'scope-modal-expanded': scopeMode === 'ASSIGNED_STORES' }"
+      :mask-closable="!scopeSaving"
+      content-style="min-height: 0; overflow-y: auto;"
     >
       <n-space vertical>
         <n-select
@@ -99,20 +131,41 @@
           :options="scopeModes"
           :disabled="scopeSaving"
         />
-        <n-select
-          v-if="scopeMode === 'ASSIGNED_STORES'"
-          v-model:value="scopeIds"
-          :options="editableStoreOptions"
-          multiple
-          filterable
-          :disabled="scopeSaving"
-          placeholder="选择门店，留空表示不授权门店"
-        />
-        <p>此设置用于限制账号可访问的门店。具体操作仍须获得对应角色权限。</p>
-        <n-button type="primary" :loading="scopeSaving" @click="saveScope"
-          >保存门店范围</n-button
-        >
+        <p>门店范围决定账号可访问哪些门店，角色决定可执行哪些操作。</p>
+        <template v-if="scopeMode === 'ASSIGNED_STORES'">
+          <div class="scope-selection-heading">
+            <strong>已选择 {{ scopeIds.length }} 家门店</strong>
+            <span>留空表示不授权门店</span>
+          </div>
+          <n-input
+            v-model:value="scopeSearch"
+            clearable
+            placeholder="搜索门店"
+            :disabled="scopeSaving"
+          />
+          <div class="scope-store-list">
+            <n-checkbox-group v-model:value="scopeIds" :disabled="scopeSaving">
+              <div v-if="visibleScopeStores.length" class="scope-store-grid">
+                <n-checkbox
+                  v-for="store in visibleScopeStores"
+                  :key="store.value"
+                  :value="store.value"
+                  :label="store.label"
+                />
+              </div>
+              <n-empty v-else description="没有匹配的门店" />
+            </n-checkbox-group>
+          </div>
+        </template>
       </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button :disabled="scopeSaving" @click="scopeOpen = false">取消</n-button>
+          <n-button type="primary" :loading="scopeSaving" @click="saveScope">
+            保存门店范围
+          </n-button>
+        </n-space>
+      </template>
     </n-modal>
     <n-modal
       v-model:show="grantAuditOpen"
@@ -122,7 +175,7 @@
       content-style="max-height: calc(100svh - 190px); overflow-y: auto;"
     >
       <n-spin :show="grantAuditLoading">
-        <p>显示最近 50 条岗位模板角色绑定和账号门店范围记录。</p>
+        <p>显示最近 50 条账号角色、门店范围及历史岗位授权记录。</p>
         <p v-if="!grantAuditRows.length && !grantAuditLoading">暂无授权记录</p>
         <n-card
           v-for="row in grantAuditRows"
@@ -344,6 +397,7 @@
 
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import type { DataTableColumns } from 'naive-ui';
 import {
   NSelect,
@@ -362,6 +416,7 @@ import {
   getV2AccessControl,
   getV2AuthorizationAudit,
   updateV2AccountScope,
+  updateV2AccountRoles,
   type V2AccountScopeMode,
   type V2AuthorizationAudit,
   type V2AuthorizationSnapshot,
@@ -451,7 +506,8 @@ const accountForm = ref({
   dataScope: 'EMPLOYEE_STORE',
   storeIds: [] as string[]
 });
-const keyword = ref('');
+const route = useRoute();
+const keyword = ref(typeof route.query.account === 'string' ? route.query.account : '');
 const statusFilter = ref('ALL');
 const logModalOpen = ref(false);
 const logsLoading = ref(false);
@@ -471,7 +527,7 @@ const scopeOptions = [
   { label: '全部门店', value: 'ALL_STORES' }
 ];
 const roleOptions = computed(() =>
-  (access.value?.roles || []).map((item) => ({
+  (access.value?.roles || []).filter((item) => item.enabled).map((item) => ({
     label: item.name,
     value: item.id
   }))
@@ -493,11 +549,49 @@ const scopeModes = [
   { label: '指定门店', value: 'ASSIGNED_STORES' },
   { label: '全部门店', value: 'ALL_STORES' }
 ];
+const accountRolesOpen = ref(false);
+const accountRolesSaving = ref(false);
+const editingAccountRoles = ref<V2LoginUser>();
+const selectedAccountRoleIds = ref<string[]>([]);
+const assignableAccountRoles = computed(() =>
+  (access.value?.roles ?? [])
+    .filter((role) => role.enabled && role.code !== 'super_admin')
+    .map((role) => ({ label: role.name, value: role.id }))
+);
+
+function openAccountRoles(row: V2LoginUser) {
+  if (row.accountType !== 'V2_ACCOUNT' || row.roles.some((role) => role.code === 'super_admin')) return;
+  editingAccountRoles.value = row;
+  const account = access.value?.accounts.find((item) => item.id === row.id);
+  selectedAccountRoleIds.value = row.usesAccountRoles === false
+    ? []
+    : (account?.roles ?? [])
+        .map(({ role }) => role.id)
+        .filter((id) => assignableAccountRoles.value.some((option) => option.value === id));
+  accountRolesOpen.value = true;
+}
+
+async function saveAccountRoles() {
+  if (!editingAccountRoles.value || accountRolesSaving.value) return;
+  accountRolesSaving.value = true;
+  try {
+    await updateV2AccountRoles(editingAccountRoles.value.id, selectedAccountRoleIds.value);
+    accountRolesOpen.value = false;
+    await loadAll();
+    message.success('账号角色已保存');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '保存账号角色失败');
+  } finally {
+    accountRolesSaving.value = false;
+  }
+}
+
 const scopeOpen = ref(false);
 const scopeSaving = ref(false);
 const scopeAccount = ref<V2LoginUser>();
 const scopeMode = ref<V2AccountScopeMode>('EMPLOYEE_STORE');
 const scopeIds = ref<string[]>([]);
+const scopeSearch = ref('');
 const editableStoreOptions = computed(() => {
   const options = new Map(storeOptions.value.map((item) => [item.value, item]));
   for (const store of scopeAccount.value?.stores ?? []) {
@@ -506,12 +600,19 @@ const editableStoreOptions = computed(() => {
   }
   return [...options.values()];
 });
+const visibleScopeStores = computed(() => {
+  const search = scopeSearch.value.trim().toLowerCase();
+  return editableStoreOptions.value.filter((store) =>
+    store.label.toLowerCase().includes(search)
+  );
+});
 const grantAuditOpen = ref(false);
 const grantAuditLoading = ref(false);
 const grantAuditRows = ref<V2AuthorizationAudit[]>([]);
 
 function openScope(row: V2LoginUser) {
   scopeAccount.value = row;
+  scopeSearch.value = '';
   scopeMode.value =
     row.dataScope === 'ALL_STORES' || row.dataScope === 'ASSIGNED_STORES'
       ? row.dataScope
@@ -557,6 +658,12 @@ async function openGrantAudit() {
 
 function describeGrant(snapshot: V2AuthorizationSnapshot | null) {
   if (!snapshot) return '首次授权';
+  if (snapshot.roleIds) {
+    if (snapshot.usesAccountRoles === false) return '随岗位授权';
+    return snapshot.roleIds.map((id) =>
+      access.value?.roles.find((role) => role.id === id)?.name ?? id
+    ).join('、') || '无绑定角色';
+  }
   if ('roleId' in snapshot)
     return (
       access.value?.roles.find((role) => role.id === snapshot.roleId)?.name ??
@@ -736,7 +843,7 @@ const columns: DataTableColumns<V2LoginUser> = [
   {
     title: '操作',
     key: 'actions',
-    width: 260,
+    width: 320,
     fixed: 'right',
     render: (row) =>
       h(
@@ -749,6 +856,9 @@ const columns: DataTableColumns<V2LoginUser> = [
               { text: true, type: 'primary', onClick: () => openLogs(row) },
               { default: () => '查看日志' }
             ),
+            row.accountType === 'V2_ACCOUNT' && !row.roles.some((role) => role.code === 'super_admin')
+              ? h(NButton, { text: true, type: 'primary', onClick: () => openAccountRoles(row) }, { default: () => '修改角色' })
+              : null,
             row.accountType === 'V2_ACCOUNT'
               ? h(
                   NButton,
@@ -1033,10 +1143,44 @@ function permissionLabel(code: string, name: string) {
   return name !== code ? name : code;
 }
 
-onMounted(loadAll);
+onMounted(async () => {
+  await loadAll();
+  if (route.query.editRoles === '1') {
+    const account = users.value.find(
+      (item) => item.accountType === 'V2_ACCOUNT' && item.username === route.query.account
+    );
+    if (account) openAccountRoles(account);
+  }
+});
 </script>
 
 <style scoped>
+.scope-modal-expanded {
+  height: min(680px, calc(100svh - 32px));
+}
+.scope-selection-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.scope-selection-heading span {
+  color: var(--bc-muted);
+}
+.scope-store-list {
+  max-height: min(340px, 44svh);
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.scope-store-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 12px 16px;
+}
+
 .table-tools {
   display: flex;
   gap: 12px;

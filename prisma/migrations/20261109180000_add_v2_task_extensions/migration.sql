@@ -23,3 +23,4 @@ CREATE TABLE `v2_operational_task_extensions` (
 
 -- AddForeignKey
 ALTER TABLE `v2_operational_task_extensions` ADD CONSTRAINT `v2_operational_task_extensions_task_id_fkey` FOREIGN KEY (`task_id`) REFERENCES `v2_operational_tasks`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+

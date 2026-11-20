@@ -7,3 +7,4 @@ ALTER TABLE `v2_operational_task_reopens` ADD COLUMN `checklist_confirmed` BOOLE
 
 -- AlterTable
 ALTER TABLE `v2_operational_task_schedules` ADD COLUMN `checklist` JSON NULL;
+

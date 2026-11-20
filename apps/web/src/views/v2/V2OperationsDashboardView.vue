@@ -75,7 +75,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { toPng } from 'html-to-image';
-import { NSelect, NDatePicker, useMessage } from 'naive-ui';
+import { NDatePicker, useMessage } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { getV2MasterDataOverview } from '@/api/v2-master-data';
 import { generateV2OperationsReport, getV2OperationsMonthlyReport, getV2OperationsWeeklyReport, type V2OperationsMonthlyReport } from '@/api/v2-operations';
 import { useAuthStore } from '@/stores/auth';

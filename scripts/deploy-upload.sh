@@ -6,92 +6,57 @@ SSH_KEY="${SSH_KEY:-/Users/allen/Downloads/bluecat_store.pem}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH_HOST="${SSH_HOST:-49.235.145.204}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/bluecat-store-system}"
-REMOTE_ARCHIVE="/tmp/bluecat-store-system-upload.tar"
-LOCAL_ARCHIVE="/tmp/bluecat-store-system-upload-$(date +%Y%m%d%H%M%S).tar"
+DEPLOY_BACKUP_DIR="${DEPLOY_BACKUP_DIR:?Set DEPLOY_BACKUP_DIR to the verified backup directory on the server}"
+LOCAL_STAGE="$(mktemp -d)"
+trap 'rm -rf -- "$LOCAL_STAGE"' EXIT
+LOCAL_ARCHIVE="$LOCAL_STAGE/release.tar"
+SSH_TARGET="$SSH_USER@$SSH_HOST"
+SSH_OPTIONS=(-i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
 cd "$ROOT_DIR"
+echo "Building committed source off-host..."
+git archive --format=tar HEAD > "$LOCAL_ARCHIVE"
+mkdir "$LOCAL_STAGE/source"
+tar -xf "$LOCAL_ARCHIVE" -C "$LOCAL_STAGE/source"
+(
+  cd "$LOCAL_STAGE/source"
+  pnpm install --frozen-lockfile
+  pnpm prisma:generate
+  pnpm build
+  test -s apps/server/dist/main.js
+  test -s apps/web/dist/index.html
+  node --check apps/server/dist/main.js
+)
 
-echo "Building and verifying artifacts off-host..."
-pnpm install --frozen-lockfile
-pnpm prisma:generate
-pnpm build
+echo "Packing committed source and build artifacts..."
+COPYFILE_DISABLE=1 tar -rf "$LOCAL_ARCHIVE" -C "$LOCAL_STAGE/source" apps/server/dist apps/web/dist
+(cd "$LOCAL_STAGE" && shasum -a 256 release.tar > SHA256SUMS)
 
-echo "Packing project..."
-COPYFILE_DISABLE=1 tar \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='.corepack' \
-  --exclude='.pnpm-store' \
-  --exclude='.env' \
-  --exclude='.idea' \
-  --exclude='.DS_Store' \
-  --exclude='database-backups' \
-  --exclude='*.tsbuildinfo' \
-  -cf "$LOCAL_ARCHIVE" .
+REMOTE_STAGE="$(ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" 'mktemp -d /tmp/bluecat-store-upload.XXXXXX')"
+printf -v remote_command 'bash -s -- %q %q %q' "$REMOTE_DIR" "$REMOTE_STAGE" "$DEPLOY_BACKUP_DIR"
+scp "${SSH_OPTIONS[@]}" "$LOCAL_ARCHIVE" "$LOCAL_STAGE/SHA256SUMS" "$SSH_TARGET:$REMOTE_STAGE/"
 
-echo "Uploading package to $SSH_USER@$SSH_HOST..."
-scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$LOCAL_ARCHIVE" \
-  "$SSH_USER@$SSH_HOST:$REMOTE_ARCHIVE"
-
-echo "Deploying on server..."
-ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
-  "REMOTE_DIR='$REMOTE_DIR' REMOTE_ARCHIVE='$REMOTE_ARCHIVE' bash -s" <<'REMOTE'
+ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "$remote_command" <<'REMOTE'
 set -euo pipefail
 
-if [ ! -f "$REMOTE_DIR/.env" ]; then
-  echo "Missing $REMOTE_DIR/.env. Create production env file before deploying."
-  exit 1
-fi
+remote_dir="$1"
+stage="$2"
+export DEPLOY_BACKUP_DIR="$3"
+trap 'rm -rf -- "$stage"' EXIT
 
-mkdir -p "$REMOTE_DIR"
-cd "$REMOTE_DIR"
+cd "$stage"
+sha256sum --check --strict SHA256SUMS
+mkdir source
+tar -xf release.tar -C source
+bash source/scripts/verify-release-backup.sh "$DEPLOY_BACKUP_DIR"
+test -s source/apps/server/dist/main.js
+test -s source/apps/web/dist/index.html
+node --check source/apps/server/dist/main.js
 
-# Keep a recoverable server-side snapshot and overlay the new archive. Avoid
-# broad pre-deploy deletion so production-only files cannot be lost silently.
-BACKUP_ROOT="$REMOTE_DIR/.release-backups"
-BACKUP_FILE="$BACKUP_ROOT/bluecat-store-system-before-$(date +%Y%m%d%H%M%S).tar.gz"
-mkdir -p "$BACKUP_ROOT"
-tar \
-  --exclude='./node_modules' \
-  --exclude='./.release-backups' \
-  -czf "$BACKUP_FILE" .
-test -s "$BACKUP_FILE"
-gzip -t "$BACKUP_FILE"
-echo "Created recoverable application snapshot: $BACKUP_FILE"
-
-# Keep only this deployment's snapshot and the immediately preceding snapshot.
-# Database backups live in the nested database directory and are intentionally
-# managed separately.
-mapfile -t OLD_APP_BACKUPS < <(
-  find "$BACKUP_ROOT" -maxdepth 1 -type f \
-    -name 'bluecat-store-system-before-*.tar.gz' -printf '%T@ %p\n' \
-    | sort -nr \
-    | tail -n +3 \
-    | cut -d' ' -f2-
-)
-for old_backup in "${OLD_APP_BACKUPS[@]}"; do
-  rm -f -- "$old_backup"
-done
-echo "Retained the two most recent application snapshots."
-
-# Historical releases may contain root-owned source files. Normalize only the
-# versioned application paths, then extract as the runtime user. Dependencies,
-# environment files, database dumps and release backups stay outside this fix.
-# The release root itself can also be root-owned on older hosts, which prevents
-# tar from atomically replacing top-level files even when those files are owned
-# by the runtime user.
-sudo chown "$(id -un):$(id -gn)" "$REMOTE_DIR"
-for versioned_path in apps deploy docs packages prisma scripts .github; do
-  if [ -e "$REMOTE_DIR/$versioned_path" ]; then
-    sudo chown -R "$(id -un):$(id -gn)" "$REMOTE_DIR/$versioned_path"
-  fi
-done
-sudo find "$REMOTE_DIR" -maxdepth 1 -type f \
-  -exec chown "$(id -un):$(id -gn)" {} +
-tar -xf "$REMOTE_ARCHIVE" -C "$REMOTE_DIR"
-chmod 600 "$REMOTE_DIR/.env"
+cd "$remote_dir"
+test -r .env
+tar -xf "$stage/release.tar" -C "$remote_dir" --no-same-owner
 DEPLOY_PREBUILT=true pnpm deploy:prod
 REMOTE
 
-rm -f "$LOCAL_ARCHIVE"
 echo "Upload deployment completed."

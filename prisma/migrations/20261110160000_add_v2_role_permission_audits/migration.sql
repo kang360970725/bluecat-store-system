@@ -10,3 +10,4 @@ CREATE TABLE `v2_role_permission_audits` (
     INDEX `v2_role_permission_audits_role_id_created_at_idx`(`role_id`, `created_at`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+

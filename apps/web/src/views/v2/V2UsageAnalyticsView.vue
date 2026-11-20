@@ -542,7 +542,8 @@
 </template>
 
 <script setup lang="ts">
-import { NTabPane, NTabs, NSelect, NDatePicker } from 'naive-ui';
+import { NTabPane, NTabs, NDatePicker } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { computed, onMounted, ref, watch } from 'vue';
 import { getV2MasterDataOverview } from '@/api/v2-master-data';
 import {

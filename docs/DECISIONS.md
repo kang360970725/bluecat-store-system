@@ -32,7 +32,13 @@ This is the current business-rule register. New decisions are appended with a da
 
 ## Employees, accounts, and permissions
 
-- Position determines the account role/permission baseline; avoid a disconnected duplicate role assignment on the employee account.
+- Employee accounts use a unique mainland mobile number as their login name. Saving employee details requires a valid mobile number and synchronizes the linked login without changing the account ID. Display nicknames default to the employee name. The standalone admin login remains available.
+
+- New V2 accounts use explicit account role assignments. A role groups functional permissions. The account's store scope limits where those permissions apply. Employment store assignments can supply the account's scope when that mode is selected. Position and grade continue to drive employment and compensation.
+- Existing employee accounts keep their position-derived grants until an administrator explicitly saves their account roles. The transition is audited and applies the selected roles across the account's authorized stores. Review differing grants across concurrent appointments before switching. Position changes do not overwrite explicit account roles.
+- Role definitions and functional permissions are maintained on the Roles and Permissions page. Employee onboarding and editing manage the linked login account and its assigned roles. Role definitions are shared across stores. Existing account store scope still limits data access.
+- For linked employee accounts, a historical all-store scope resolves to current employment stores and managed stores. Explicitly assigned store scopes are preserved. Super administrators retain all-store access.
+- Store managers can view the ranking of all non-closed stores in Store Center. The top summary covers only their authorized stores. Super administrators see the full-store summary. Store workspaces and detailed APIs remain subject to authorized store scope.
 - Store managers may view, add, transfer, and terminate employees only within authorized stores.
 - Creating an employee opens a login account by default using the employee phone number.
 - Initial passwords must be communicated through an approved secure channel, require change at first login, and must never be written as plaintext in the repository.
@@ -126,3 +132,14 @@ This is the current business-rule register. New decisions are appended with a da
 
 - Register a separate WeChat mini-program. Use Taro with Vue 3 and TypeScript and share the Store V2 backend and permissions with Web.
 - The mini-program will cover the existing Web business content and management functions in phases, starting with employee attendance and tasks. The mobile interface may adapt navigation, lists and forms while preserving business rules and access controls.
+
+## Store workforce scheduling (2026-11-19)
+
+- Workforce scheduling belongs to the store workspace. The default store-manager role receives `schedule:view` and `schedule:update` and manages only an authorized store; a super administrator may manage every store. Operations configuration is not the primary scheduling workspace. Custom roles still receive scheduling access only when those permissions are explicitly assigned.
+- Cashier and floor-service staffing use three people per position when the store follows the standard rotation. The standard six-day cycle is `day, day, night, night, rest, rest`; the three employees are staggered by zero, two and four days so one person covers day, one covers night and one rests each day.
+- Standard day shift is 09:00–21:00. Standard night shift is 21:00–09:00 on the next day. A rest day is explicit schedule data, not an empty cell; an empty cell means the employee has not yet been scheduled.
+- Busy stores may operate bartender, flex and customer-service positions. Bartender and flex shifts are normally 10 hours, customer-service shifts are normally 8 hours, and these start/end times are configured by each store according to its own peak period. These durations are planning guidance rather than payroll-formula changes.
+- Bartender, flex and customer-service employees normally receive four rest days per calendar month. The first delivery fills a selected fixed shift and lets the manager explicitly mark four rest days in the monthly matrix; it does not guess peak days.
+- A draft month can inherit the preceding published or locked schedule. Explicit work succession maps a former employee to one current store employment from an effective date so a replacement can inherit the former employee's schedule without rewriting historical assignments.
+- A shift definition already referenced by schedule history is versioned when edited: the historical definition is disabled and retained, while a new active definition is created. Published attendance history must not change because a store later edits its working hours.
+- Ordinary and overtime assignments are distinct. A person already working a regular shift that day cannot also be selected for overtime. Rest, work and overtime remain auditable and attendance only exposes published or locked non-rest assignments.

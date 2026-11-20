@@ -46,3 +46,4 @@ ALTER TABLE `v2_attendance_wechat_bindings` ADD CONSTRAINT `v2_attendance_wechat
 
 -- AddForeignKey
 ALTER TABLE `v2_attendance_punches` ADD CONSTRAINT `v2_attendance_punches_assignment_id_fkey` FOREIGN KEY (`assignment_id`) REFERENCES `v2_schedule_assignments`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
+

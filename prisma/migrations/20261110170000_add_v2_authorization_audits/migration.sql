@@ -12,3 +12,4 @@ CREATE TABLE `v2_authorization_audits` (
     INDEX `v2_authorization_audits_created_at_idx`(`created_at`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+

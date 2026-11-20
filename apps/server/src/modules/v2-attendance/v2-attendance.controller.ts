@@ -140,9 +140,45 @@ class ReviewDto {
   note!: string;
 }
 
+class AttendanceSettingsDto {
+  @Matches(/^wx[a-f0-9]{16}$/i)
+  appId!: string;
+
+  @IsOptional()
+  @Matches(/^[a-f0-9]{32}$/i)
+  appSecret?: string;
+
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  clockInEarly!: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(999)
+  clockOutLate!: number;
+}
+
 @Controller('v2/attendance')
 export class V2AttendanceController {
   constructor(private readonly attendance: V2AttendanceService) {}
+
+  @Get('settings')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  settings(@CurrentUserInfo() user: CurrentUser) {
+    return this.attendance.settings(user.id);
+  }
+
+  @Patch('settings')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  saveSettings(
+    @CurrentUserInfo() user: CurrentUser,
+    @Body() body: AttendanceSettingsDto
+  ) {
+    return this.attendance.saveSettings(user.id, body);
+  }
 
   @Get('stores/:storeId/wifi-networks')
   @Header('Cache-Control', 'no-store')
@@ -169,6 +205,12 @@ export class V2AttendanceController {
   @UseGuards(JwtAuthGuard)
   bind(@CurrentUserInfo() user: CurrentUser, @Body() body: BindDto) {
     return this.attendance.bind(user.id, body.password, body.wechatCode);
+  }
+
+  @Post('wechat/session')
+  @Header('Cache-Control', 'no-store')
+  openWechatSession(@Body() body: WechatDto) {
+    return this.attendance.openWechatSession(body.wechatCode);
   }
 
   @Post('wechat/assignments')

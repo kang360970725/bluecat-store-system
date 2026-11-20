@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NSelect } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { computed, onMounted, ref } from 'vue';
 import { API_BASE_URL, request } from '@/api/http';
 import { useAuthStore } from '@/stores/auth';

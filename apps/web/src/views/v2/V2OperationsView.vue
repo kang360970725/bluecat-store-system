@@ -3,7 +3,7 @@
     <div class="section-head">
       <div>
         <h1>运营配置</h1>
-        <p>确认外部门店映射，并配置班次、排班周期、经营目标和消息推送。</p>
+        <p>确认外部门店映射，并配置全局默认班次、经营目标和消息推送。</p>
       </div>
       <n-button :loading="loading" @click="load">刷新</n-button>
     </div>
@@ -81,7 +81,20 @@
           </div>
         </n-card>
       </n-tab-pane>
-      <n-tab-pane name="workforce" tab="班次排班">
+      <n-tab-pane name="workforce" tab="默认班次">
+        <n-alert type="info" :bordered="false">
+          排班周期、门店自定义班次和人员排岗已迁入「门店中心 → 门店工作台 →
+          排班排岗」，由各店负责人维护。
+          <template #action
+            ><n-button
+              size="small"
+              type="primary"
+              secondary
+              @click="router.push('/v2/stores')"
+              >进入门店中心</n-button
+            ></template
+          >
+        </n-alert>
         <n-card :bordered="false" title="默认班次"
           ><template #header-extra
             ><n-button size="small" type="primary" @click="open('shift')"
@@ -91,34 +104,6 @@
             :rows="overview?.shiftTemplates ?? []"
             empty="尚无默认班次"
         /></n-card>
-        <n-card :bordered="false" title="排班周期"
-          ><template #header-extra
-            ><n-button size="small" type="primary" @click="open('schedule')"
-              >新建排班周期</n-button
-            ></template
-          ><n-empty
-            v-if="!overview?.schedules.length"
-            description="尚无排班周期"
-          /><n-list v-else bordered
-            ><n-list-item v-for="item in overview.schedules" :key="item.id"
-              ><div class="simple-record">
-                <div>
-                  <strong>{{ storeDisplayName(item.store) }}</strong
-                  ><span
-                    >{{ item.startsOn.slice(0, 10) }} 至
-                    {{ item.endsOn.slice(0, 10) }} ·
-                    {{ item._count.assignments }} 条排岗</span
-                  >
-                </div>
-                <n-button
-                  size="small"
-                  @click="router.push(`/v2/schedules/${item.id}`)"
-                  >编辑排班</n-button
-                >
-              </div></n-list-item
-            ></n-list
-          ></n-card
-        >
       </n-tab-pane>
       <n-tab-pane name="targets" tab="目标评分">
         <n-card :bordered="false" title="经营目标"
@@ -483,9 +468,9 @@ import {
   NTimePicker,
   NEmpty,
   NFormItem,
-  NSelect,
   useMessage
 } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import { useRouter } from 'vue-router';
 import {
   getV2MasterDataOverview,

@@ -35,6 +35,7 @@ import {
   CreateV2StoreAreaDto,
   CreateV2AccountDto,
   UpdateV2AccountScopeDto,
+  UpdateV2AccountRolesDto,
   CreateV2RoleDto,
   CreateV2StoreCostDto,
   CorrectV2StoreCostDto,
@@ -67,6 +68,13 @@ export class V2MasterDataController {
   @RequirePermissions('store:view')
   overview(@CurrentUserInfo() user: CurrentUser) {
     return this.service.listOverview(user);
+  }
+
+  @Get('roles')
+  @RequirePermissions('permission:view')
+  async roleCatalog(@CurrentUserInfo() user: CurrentUser) {
+    await this.requireSuperAdmin(user);
+    return this.service.listRoleCatalog();
   }
 
   @Get('access-control')
@@ -126,6 +134,17 @@ export class V2MasterDataController {
   async authorizationAudit(@CurrentUserInfo() user: CurrentUser) {
     await this.requireSuperAdmin(user);
     return this.service.authorizationAudit();
+  }
+
+  @Patch('accounts/:id/roles')
+  @RequirePermissions('permission:update')
+  async updateAccountRoles(
+    @Param('id') id: string,
+    @Body() body: UpdateV2AccountRolesDto,
+    @CurrentUserInfo() user: CurrentUser
+  ) {
+    await this.requireSuperAdmin(user);
+    return this.service.updateAccountRoles(id, body.roleIds, user.id);
   }
 
   @Patch('accounts/:id/store-scope')
@@ -280,9 +299,15 @@ export class V2MasterDataController {
   listEmployees(
     @CurrentUserInfo() user: CurrentUser,
     @Query('storeId') storeId?: string,
-    @Query('organizationId') organizationId?: string
+    @Query('organizationId') organizationId?: string,
+    @Query('allStores') allStores?: string
   ) {
-    return this.service.listEmployees(storeId, organizationId, user);
+    return this.service.listEmployees(
+      storeId,
+      organizationId,
+      user,
+      allStores === 'true'
+    );
   }
 
   @Post('employees')

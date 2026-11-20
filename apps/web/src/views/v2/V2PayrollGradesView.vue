@@ -63,12 +63,12 @@
 import { computed, h, onMounted, reactive, ref } from 'vue';
 import {
   NInputNumber,
-  NSelect,
   NDataTable,
   NButton,
   type DataTableColumns,
   useMessage
 } from 'naive-ui';
+import { NSelect } from '@/components/Select';
 import {
   createV2PayrollGrade,
   getV2PayrollGrades,
