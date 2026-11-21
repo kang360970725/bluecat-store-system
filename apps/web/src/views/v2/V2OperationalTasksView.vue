@@ -4,6 +4,7 @@ import { NSelect } from '@/components/Select';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { API_BASE_URL, request } from '@/api/http';
 import { useAuthStore } from '@/stores/auth';
+import { browserUuid } from '@/utils/uuid';
 
 interface Target {
   storeId: string;
@@ -510,7 +511,7 @@ function dispatch() {
         };
     const signature = JSON.stringify(payload);
     if (dispatchAttempt.value?.signature !== signature) {
-      dispatchAttempt.value = { signature, id: crypto.randomUUID() };
+      dispatchAttempt.value = { signature, id: browserUuid() };
     }
     const id = dispatchAttempt.value.id;
     if (isRecurring) {
