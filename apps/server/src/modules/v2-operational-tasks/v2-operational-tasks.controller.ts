@@ -107,6 +107,13 @@ class TargetDto {
   targetKey!: string;
 }
 
+class CcOptionsDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 2000)
+  storeIds?: string;
+}
+
 class DispatchDto {
   @IsUUID()
   batchId!: string;
@@ -354,6 +361,12 @@ export class V2OperationalTasksController {
   @Header('Cache-Control', 'no-store')
   targets(@CurrentUserInfo() user: CurrentUser) {
     return this.tasks.dispatchTargets(user.id);
+  }
+
+  @Get('cc-options')
+  @Header('Cache-Control', 'no-store')
+  ccOptions(@CurrentUserInfo() user: CurrentUser, @Query() query: CcOptionsDto) {
+    return this.tasks.ccOptions(user.id, query.storeIds?.split(',') ?? []);
   }
 
   @Get('reminders')

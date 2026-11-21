@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NInputNumber } from 'naive-ui';
 import { NSelect } from '@/components/Select';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { API_BASE_URL, request } from '@/api/http';
 import { useAuthStore } from '@/stores/auth';
 
@@ -10,6 +10,13 @@ interface Target {
   storeName: string;
   targetKey: string;
   targetName: string;
+}
+
+interface CcOption {
+  username: string;
+  displayName: string;
+  allStores: boolean;
+  stores: string[];
 }
 
 interface ExtensionHistory {
@@ -182,7 +189,10 @@ const selected = ref<string[]>([]);
 const title = ref('');
 const description = ref('');
 const checklistText = ref('');
-const ccText = ref('');
+const ccUsernames = ref<string[]>([]);
+const ccCandidates = ref<CcOption[]>([]);
+const ccLoading = ref(false);
+const ccError = ref('');
 const checkedItems = ref<Array<number | string>>([]);
 const due = ref('');
 const cadence = ref<'ONCE' | Cadence>('ONCE');
@@ -226,6 +236,58 @@ const options = computed(() =>
     label: `${target.storeName} · ${target.targetName}`
   }))
 );
+const selectedStoreKey = computed(() =>
+  [
+    ...new Set(
+      visibleTargets.value
+        .filter((target) => selected.value.includes(targetValue(target)))
+        .map((target) => target.storeId)
+    )
+  ]
+    .sort()
+    .join(',')
+);
+const ccOptions = computed(() =>
+  ccCandidates.value.map((account) => ({
+    value: account.username,
+    label: `${account.displayName} · ${account.username} · ${
+      account.allStores ? '全部门店' : account.stores.join('、')
+    }`,
+    disabled:
+      ccUsernames.value.length >= 5 &&
+      !ccUsernames.value.includes(account.username)
+  }))
+);
+let ccLoadSequence = 0;
+
+async function loadCcOptions(storeIds: string) {
+  const sequence = ++ccLoadSequence;
+  ccCandidates.value = [];
+  ccError.value = '';
+  if (!storeIds) {
+    ccUsernames.value = [];
+    return;
+  }
+  ccLoading.value = true;
+  try {
+    const rows = await request<CcOption[]>(
+      `${base}/cc-options?storeIds=${encodeURIComponent(storeIds)}`
+    );
+    if (sequence !== ccLoadSequence) return;
+    ccCandidates.value = rows;
+    const available = new Set(rows.map((item) => item.username));
+    ccUsernames.value = ccUsernames.value.filter((username) =>
+      available.has(username)
+    );
+  } catch (error) {
+    if (sequence === ccLoadSequence)
+      ccError.value = (error as Error).message;
+  } finally {
+    if (sequence === ccLoadSequence) ccLoading.value = false;
+  }
+}
+
+watch(selectedStoreKey, (storeIds) => void loadCcOptions(storeIds));
 const isExpired = (task: Task) => new Date(task.dueAt).getTime() <= Date.now();
 const statusText = (task: Task) => {
   if (
@@ -402,20 +464,7 @@ function dispatch() {
       .filter((target) => selected.value.includes(targetValue(target)))
       .map(({ storeId, targetKey }) => ({ storeId, targetKey }));
     const formTitle = title.value.trim();
-    const ccUsernames = [
-      ...new Set(
-        ccText.value
-          .split(/[\n,，]/)
-          .map((item) => item.trim().toLowerCase())
-          .filter(Boolean)
-      )
-    ];
-    if (
-      ccUsernames.length > 5 ||
-      ccUsernames.some((name) => name.length > 100)
-    ) {
-      throw new Error('最多填写 5 个抄送账号');
-    }
+    const formCcUsernames = [...new Set(ccUsernames.value)];
     const formDescription = description.value.trim();
     const checklist = checklistText.value
       .split(/\r?\n/)
@@ -439,7 +488,7 @@ function dispatch() {
           title: formTitle,
           description: formDescription,
           checklist,
-          ccUsernames,
+          ccUsernames: formCcUsernames,
           cadence: cadenceValue,
           firstRunAt: time,
           dueHours: dueHours.value,
@@ -449,7 +498,7 @@ function dispatch() {
           title: formTitle,
           description: formDescription,
           checklist,
-          ccUsernames,
+          ccUsernames: formCcUsernames,
           dueAt: time,
           sourceTaskId: sourceTask.value?.id,
           sourceItemIndex: sourceTask.value ? sourceItemIndex.value : undefined,
@@ -481,7 +530,7 @@ function dispatch() {
     title.value = '';
     description.value = '';
     checklistText.value = '';
-    ccText.value = '';
+    ccUsernames.value = [];
     due.value = '';
     selected.value = [];
     sourceTask.value = undefined;
@@ -603,7 +652,7 @@ function startRectification(task: Task, index?: number) {
   sourceTask.value = task;
   cadence.value = 'ONCE';
   checklistText.value = '';
-  ccText.value = '';
+  ccUsernames.value = [];
   title.value = `整改 · ${task.title}`.slice(0, 120);
   description.value =
     index === undefined
@@ -791,29 +840,41 @@ onUnmounted(() => {
           placeholder="检查清单（选填，每行一项）"
           :disabled="busy"
         />
-        <n-input
-          v-model:value="ccText"
-          type="textarea"
-          maxlength="505"
-          placeholder="抄送登录账号（选填，最多 5 个，逗号或换行分隔）"
-          :disabled="busy"
-        />
-        <p v-if="ccText">抄送人须已有全部目标门店的任务管理权限。</p>
         <n-select
           v-if="!sourceTask"
           v-model:value="cadence"
           :options="cadenceOptions"
           :disabled="busy"
         />
+        <strong>任务执行门店与岗位</strong>
         <n-select
           v-model:value="selected"
           :options="options"
           multiple
           filterable
           :max-tag-count="4"
-          placeholder="选择门店与岗位（每组一项任务）"
+          placeholder="任务执行门店与岗位（每组生成一项任务）"
           :disabled="busy"
         />
+        <p>仅显示当前有在岗员工的岗位；同岗位员工均可看到任务，由其中一人认领执行。</p>
+        <strong>结果抄送账号（选填）</strong>
+        <n-select
+          v-model:value="ccUsernames"
+          :options="ccOptions"
+          multiple
+          filterable
+          :max-tag-count="3"
+          :loading="ccLoading"
+          :disabled="busy || !selectedStoreKey"
+          placeholder="结果抄送账号（选填，最多 5 个）"
+        />
+        <p v-if="selectedStoreKey && !ccLoading && !ccOptions.length">
+          当前没有同时具备全部已选门店任务管理权限的可用账号。
+        </p>
+        <n-alert type="info" :bordered="false">
+          抄送人只在员工提交任务结果后收到通知，不会获得任务认领或执行权限；系统仅列出拥有全部已选门店任务管理权限的账号。
+        </n-alert>
+        <n-alert v-if="ccError" type="error" :bordered="false">{{ ccError }}</n-alert>
         <label>
           {{ recurring ? '首次派发时间' : '截止时间' }}（北京时间）
           <input

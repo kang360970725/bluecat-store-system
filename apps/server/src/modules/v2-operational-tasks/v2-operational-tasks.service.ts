@@ -1047,6 +1047,71 @@ export class V2OperationalTasksService
     );
   }
 
+  async ccOptions(accountId: string, rawStoreIds: string[]) {
+    const storeIds = [
+      ...new Set(rawStoreIds.map((storeId) => storeId.trim()).filter(Boolean))
+    ];
+    if (!storeIds.length) return [];
+    if (storeIds.length > 50 || storeIds.some((storeId) => storeId.length > 100))
+      throw new BadRequestException('抄送门店范围无效');
+    const requester = await this.manageAccess(accountId, this.prisma);
+    if (
+      requester.storeIds &&
+      storeIds.some((storeId) => !requester.storeIds?.includes(storeId))
+    ) {
+      throw new ForbiddenException('无权查看所选门店的抄送账号');
+    }
+    const [accounts, stores] = await Promise.all([
+      this.prisma.v2Account.findMany({
+        where: {
+          status: 'ACTIVE',
+          deletedAt: null,
+          mustChangePassword: false
+        },
+        select: { id: true, username: true, displayName: true },
+        orderBy: [{ displayName: 'asc' }, { username: 'asc' }]
+      }),
+      this.prisma.v2Store.findMany({
+        where: operating,
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' }
+      })
+    ]);
+    const storeName = new Map(stores.map((store) => [store.id, store.name]));
+    const options = await Promise.all(
+      accounts.map(async (account) => ({
+        account,
+        access: await resolveScopedPermission(
+          account.id,
+          'operational-task:manage',
+          this.prisma
+        )
+      }))
+    );
+    return options.flatMap(({ account, access }) => {
+      if (
+        !access ||
+        storeIds.some(
+          (storeId) => access.storeIds && !access.storeIds.includes(storeId)
+        )
+      ) {
+        return [];
+      }
+      return [
+        {
+          username: account.username,
+          displayName: account.displayName,
+          allStores: access.storeIds === null,
+          stores:
+            access.storeIds?.flatMap((storeId) => {
+              const name = storeName.get(storeId);
+              return name ? [name] : [];
+            }) ?? []
+        }
+      ];
+    });
+  }
+
   async dispatch(accountId: string, input: DispatchInput) {
     const title = input.title.trim();
     const description = input.description.trim();
@@ -1511,8 +1576,13 @@ export class V2OperationalTasksService
   ) {
     const recipients: Array<{ accountId: string; username: string }> = [];
     for (const username of usernames) {
-      const account = await tx.v2Account.findUnique({
-        where: { username },
+      const account = await tx.v2Account.findFirst({
+        where: {
+          username,
+          status: 'ACTIVE',
+          deletedAt: null,
+          mustChangePassword: false
+        },
         select: { id: true }
       });
       const access =
