@@ -167,7 +167,13 @@
                 ><n-select
                   v-model:value="form.positionId"
                   :options="positionOptions"
+                  :loading="positionLoading"
+                  :disabled="!form.storeId || positionLoading"
+                  :placeholder="positionPlaceholder"
               /></n-form-item>
+              <n-alert v-if="form.storeId && !positionLoading && !positionOptions.length" type="warning" :bordered="false"
+                >{{ positionLoadError || '该门店尚未配置可用岗位，请联系管理员在岗位配置中建立或继承岗位。' }}</n-alert
+              >
             </template>
             <template v-else>
               <n-form-item label="总部组织"
@@ -279,7 +285,13 @@
           ><n-form-item label="岗位"
             ><n-select
               v-model:value="form.positionId"
-              :options="positionOptions" /></n-form-item
+              :options="positionOptions"
+              :loading="positionLoading"
+              :disabled="!form.storeId || positionLoading"
+              :placeholder="positionPlaceholder" /></n-form-item
+          ><n-alert v-if="form.storeId && !positionLoading && !positionOptions.length" type="warning" :bordered="false"
+            >{{ positionLoadError || '该门店尚未配置可用岗位，请联系管理员在岗位配置中建立或继承岗位。' }}</n-alert
+          >
           ><n-form-item label="生效日期"
             ><n-date-picker
               v-model:formatted-value="form.effectiveOn"
@@ -485,7 +497,7 @@ import {
   getV2MasterDataOverview,
   getV2OnboardingPayrollTemplates,
   getV2PayrollProfileTemplates,
-  getV2StoreArchive,
+  getV2StorePositions,
   importV2Employees,
   resetV2EmployeePassword,
   terminateV2Employee,
@@ -514,6 +526,8 @@ const message = useMessage(),
   employeeLoading = ref(false),
   modalOpen = ref(false),
   saving = ref(false),
+  positionLoading = ref(false),
+  positionLoadError = ref(''),
   kind = ref('employee'),
   form = reactive<Record<string, any>>({}),
   positions = ref<Array<{ id: string; name: string }>>([]),
@@ -557,6 +571,15 @@ const title = computed(
   ),
   positionOptions = computed(() =>
     positions.value.map((i) => ({ label: i.name, value: i.id }))
+  ),
+  positionPlaceholder = computed(() =>
+    !form.storeId
+      ? '请先选择门店'
+      : positionLoading.value
+        ? '正在加载岗位…'
+        : positionOptions.value.length
+          ? '请选择岗位'
+          : '该门店暂无可用岗位'
   ),
   headOfficeOrganizations = computed(
     () =>
@@ -945,6 +968,10 @@ function openEmployee() {
     createLoginAccount: true,
     loginPassword: '123456'
   });
+  if (storeOptions.value.length === 1) {
+    form.storeId = storeOptions.value[0].value;
+    void loadPositions(form.storeId);
+  }
 }
 async function downloadImportTemplate() {
   try {
@@ -1069,8 +1096,19 @@ async function loadPositions(id: string) {
   form.payrollBaseSalary = undefined;
   form.payrollPerformanceBase = undefined;
   positions.value = [];
-  const nextPositions = (await getV2StoreArchive(id)).positions;
-  if (sequence === positionLoadSequence) positions.value = nextPositions;
+  positionLoadError.value = '';
+  positionLoading.value = true;
+  try {
+    const nextPositions = (await getV2StorePositions(id)).filter((item) => item.enabled);
+    if (sequence === positionLoadSequence) positions.value = nextPositions;
+  } catch (error) {
+    if (sequence === positionLoadSequence) {
+      positionLoadError.value = error instanceof Error ? error.message : '岗位加载失败，请稍后重试';
+      message.error(positionLoadError.value);
+    }
+  } finally {
+    if (sequence === positionLoadSequence) positionLoading.value = false;
+  }
 }
 async function resetPassword(employee: V2EmployeeItem) {
   const result = await resetV2EmployeePassword(employee.id);

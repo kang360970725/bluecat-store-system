@@ -153,6 +153,17 @@ export function getV2StoreArchive(storeId: string, costMonth?: string) {
   return request<V2StoreArchive>(`/v2/master-data/stores/${storeId}/archive${costMonth ? `?costMonth=${encodeURIComponent(costMonth)}` : ''}`);
 }
 
+export type V2StorePositionOption = {
+  id: string;
+  name: string;
+  code: string;
+  enabled: boolean;
+};
+
+export function getV2StorePositions(storeId: string) {
+  return request<V2StorePositionOption[]>(`/v2/master-data/stores/${storeId}/positions`);
+}
+
 export function createV2PositionTemplate(payload: {
   name: string;
   code?: string;

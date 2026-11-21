@@ -18,6 +18,7 @@ This is the current business-rule register. New decisions are appended with a da
 - Each ordinary store position can define both monthly and hourly compensation because different employees may be hired under either method.
 - A single employee does not use both monthly and hourly compensation for the same position in the same month.
 - Store basic positions have fixed compensation and no level.
+- The centrally maintained ordinary store positions include 收银、外场、客服、吧员 and 机动岗. Active stores inherit these templates so employee onboarding always selects a formal position rather than creating temporary per-store jobs.
 - The store-manager position is a headquarters functional position and requires a P level.
 - Store-manager base and performance salary are read entirely from the selected P-level configuration; the position has no hourly compensation.
 - Employee records do not maintain independent duplicated salary profiles.
