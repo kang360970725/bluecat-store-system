@@ -13,6 +13,12 @@ interface Target {
   targetName: string;
 }
 
+interface ChecklistItem {
+  id: string;
+  label: string;
+  mode: 'CONFIRM' | 'PHOTO_REQUIRED';
+}
+
 interface CcOption {
   username: string;
   displayName: string;
@@ -54,7 +60,8 @@ interface Task {
   status: 'PENDING' | 'CLAIMED' | 'SUBMITTED' | 'DONE';
   claimerName: string | null;
   submission: string | null;
-  checklist: string[] | null;
+  checklist: Array<string | ChecklistItem> | null;
+  reviewMode: 'REQUIRED' | 'AUTO_COMPLETE';
   ccRecipients?: Array<{ username: string }> | null;
   checklistConfirmed: boolean;
   checklistIssues: Record<string, string> | null;
@@ -64,7 +71,7 @@ interface Task {
     reason: string;
     submittedAt: string;
   } | null;
-  evidence: Array<{ id: string }>;
+  evidence: Array<{ id: string; checklistItemId: string | null; byteSize: number }>;
   extensions?: ExtensionHistory[];
   submittedAt: string | null;
   claimedAt: string | null;
@@ -135,6 +142,33 @@ interface Schedule {
   pauseReason: string | null;
   store: { name: string };
 }
+interface ManagementGroupStore {
+  id: string;
+  name: string;
+  groupId: string | null;
+  memberEmploymentIds: string[];
+  employments: Array<{
+    id: string;
+    employee: { name: string; employeeNo: string };
+    position: { name: string };
+  }>;
+}
+interface EvidenceStorage {
+  count: number;
+  bytes: number;
+  recentCount: number;
+  recentBytes: number;
+  draftCount: number;
+  draftBytes: number;
+  perImageLimitBytes: number;
+  perSubmissionLimitBytes: number;
+}
+const managementGroups = ref<ManagementGroupStore[]>([]);
+const storage = ref<EvidenceStorage>();
+const formatStorage = (bytes: number) =>
+  bytes < 1024 * 1024
+    ? `${(bytes / 1024).toFixed(1)} KB`
+    : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 type Reminder = Pick<Task, 'id' | 'title' | 'dueAt' | 'store'>;
 const cadenceLabels: Record<Cadence, string> = {
   DAILY: '每天',
@@ -189,7 +223,8 @@ const targets = ref<Target[]>([]);
 const selected = ref<string[]>([]);
 const title = ref('');
 const description = ref('');
-const checklistText = ref('');
+const checklistDrafts = ref<ChecklistItem[]>([]);
+const reviewMode = ref<'REQUIRED' | 'AUTO_COMPLETE'>('AUTO_COMPLETE');
 const ccUsernames = ref<string[]>([]);
 const ccCandidates = ref<CcOption[]>([]);
 const ccLoading = ref(false);
@@ -218,6 +253,7 @@ const visibleTargets = computed(() =>
 );
 const submission = ref('');
 const photos = ref<File[]>([]);
+const itemPhotos = ref<Record<string, File>>({});
 const photoError = ref('');
 const previewUrl = ref('');
 let previewRequest: AbortController | undefined;
@@ -231,6 +267,27 @@ const time = new Intl.DateTimeFormat('zh-CN', {
   timeStyle: 'short'
 });
 const targetValue = (target: Target) => `${target.storeId}/${target.targetKey}`;
+const normalizedChecklist = (task?: Task): ChecklistItem[] =>
+  (task?.checklist ?? []).map((item, index) =>
+    typeof item === 'string'
+      ? { id: String(index), label: item, mode: 'CONFIRM' }
+      : item
+  );
+const structuredChecklist = (task?: Task) =>
+  Boolean(task?.checklist?.some((item) => typeof item === 'object'));
+const checklistLabel = (task: Task, id: string) =>
+  normalizedChecklist(task).find((item) => item.id === id)?.label ?? `检查项 ${id}`;
+const addChecklistItem = () => {
+  if (checklistDrafts.value.length >= 20) return;
+  checklistDrafts.value.push({
+    id: browserUuid(),
+    label: '',
+    mode: 'CONFIRM'
+  });
+};
+const removeChecklistItem = (id: string) => {
+  checklistDrafts.value = checklistDrafts.value.filter((item) => item.id !== id);
+};
 const options = computed(() =>
   visibleTargets.value.map((target) => ({
     value: targetValue(target),
@@ -297,7 +354,7 @@ const statusText = (task: Task) => {
   )
     return '已逾期';
   return {
-    PENDING: '待认领',
+    PENDING: '待处理',
     CLAIMED: '执行中',
     SUBMITTED: '待确认',
     DONE: '已完成'
@@ -350,19 +407,36 @@ async function load(
 
   if (refreshTargets || !data.canManage) {
     if (data.canManage) {
-      const [nextTargets, nextSchedules] = await Promise.all([
+      const [nextTargets, nextSchedules, nextGroups, nextStorage] = await Promise.all([
         request<Target[]>(`${base}/targets`),
-        request<Schedule[]>(`${base}/schedules`)
+        request<Schedule[]>(`${base}/schedules`),
+        request<ManagementGroupStore[]>(`${base}/management-groups`),
+        request<EvidenceStorage>(`${base}/evidence-storage`)
       ]);
       targets.value = nextTargets;
       schedules.value = nextSchedules;
+      managementGroups.value = nextGroups;
+      storage.value = nextStorage;
     } else {
       targets.value = [];
       schedules.value = [];
+      managementGroups.value = [];
+      storage.value = undefined;
     }
     const available = new Set(targets.value.map(targetValue));
     selected.value = selected.value.filter((value) => available.has(value));
   }
+}
+
+function saveManagementGroup(store: ManagementGroupStore) {
+  void run(async () => {
+    await request(`${base}/management-groups/${encodeURIComponent(store.id)}`, {
+      method: 'POST',
+      body: JSON.stringify({ employmentIds: store.memberEmploymentIds })
+    });
+    feedback.value = `${store.name}门店管理组已保存`;
+    await load(managementPage.value, appliedFilters.value, true);
+  });
 }
 
 async function loadExtensions() {
@@ -467,38 +541,40 @@ function dispatch() {
     const formTitle = title.value.trim();
     const formCcUsernames = [...new Set(ccUsernames.value)];
     const formDescription = description.value.trim();
-    const checklist = checklistText.value
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .filter(Boolean);
+    const checklist = checklistDrafts.value
+      .map((item) => ({ ...item, label: item.label.trim() }))
+      .filter((item) => item.label);
     if (
       checklist.length > 20 ||
-      checklist.some((item) => item.length > 120) ||
-      new Set(checklist).size !== checklist.length
+      checklist.some((item) => item.label.length > 120) ||
+      new Set(checklist.map((item) => item.label)).size !== checklist.length ||
+      checklist.filter((item) => item.mode === 'PHOTO_REQUIRED').length > 12
     ) {
-      throw new Error('最多 20 个检查项，每项不超过 120 字，且不能重复');
+      throw new Error('最多 20 个检查项、其中拍照项最多 12 个，名称不能重复且不超过 120 字');
     }
     const time = new Date(due.value + '+08:00').toISOString();
     const cadenceValue = cadence.value;
     const isRecurring = cadenceValue !== 'ONCE' && !sourceTask.value;
-    if (isRecurring && (formTargets.length !== 1 || !dueHours.value)) {
-      throw new Error('循环模板需要一个门店岗位和完成时限');
+    if (isRecurring && (!formTargets.length || !dueHours.value)) {
+      throw new Error('循环模板需要至少一个执行目标和完成时限');
     }
     const payload = isRecurring
       ? {
           title: formTitle,
           description: formDescription,
           checklist,
+          reviewMode: reviewMode.value,
           ccUsernames: formCcUsernames,
           cadence: cadenceValue,
           firstRunAt: time,
           dueHours: dueHours.value,
-          target: formTargets[0]
+          targets: formTargets
         }
       : {
           title: formTitle,
           description: formDescription,
           checklist,
+          reviewMode: reviewMode.value,
           ccUsernames: formCcUsernames,
           dueAt: time,
           sourceTaskId: sourceTask.value?.id,
@@ -519,7 +595,7 @@ function dispatch() {
         method: 'POST',
         body: JSON.stringify({ ...payload, requestId: id })
       });
-      feedback.value = '已创建循环模板';
+      feedback.value = `已创建 ${formTargets.length} 个循环模板`;
     } else {
       const result = await request<{ count: number }>(`${base}/dispatch`, {
         method: 'POST',
@@ -530,7 +606,8 @@ function dispatch() {
     dispatchAttempt.value = undefined;
     title.value = '';
     description.value = '';
-    checklistText.value = '';
+    checklistDrafts.value = [];
+    reviewMode.value = 'AUTO_COMPLETE';
     ccUsernames.value = [];
     due.value = '';
     selected.value = [];
@@ -558,9 +635,28 @@ function openSubmission(task: Task) {
   checkedItems.value = [];
   submission.value = '';
   photos.value = [];
+  itemPhotos.value = {};
   photoError.value = '';
   errorMessage.value = '';
   selectedTask.value = task;
+}
+
+function chooseItemPhoto(itemId: string, event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  photoError.value = '';
+  if (!file) {
+    const next = { ...itemPhotos.value };
+    delete next[itemId];
+    itemPhotos.value = next;
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    input.value = '';
+    photoError.value = '单张照片不能超过 5 MB';
+    return;
+  }
+  itemPhotos.value = { ...itemPhotos.value, [itemId]: file };
 }
 
 function choosePhotos(event: Event) {
@@ -616,17 +712,27 @@ function act(task: Task, action: 'claim' | 'submit' | 'complete') {
   void run(async () => {
     let body: FormData | string | undefined;
     if (action === 'submit') {
-      if (task.sourceTaskId && !photos.value.length)
+      const items = normalizedChecklist(task);
+      const structured = structuredChecklist(task);
+      const requiredIds = items
+        .filter((item) => item.mode === 'PHOTO_REQUIRED')
+        .map((item) => item.id);
+      if (task.sourceTaskId && !photos.value.length && !Object.keys(itemPhotos.value).length)
         throw new Error('请至少上传一张整改照片');
+      if (requiredIds.some((id) => !itemPhotos.value[id]))
+        throw new Error('请为每个拍照检查项上传一张照片');
       body = new FormData();
       body.set('submission', submission.value);
-      if (checkedItems.value.length)
+      if (structured) {
+        body.set('confirmedItems', JSON.stringify(checkedItems.value.map(String)));
+      } else if (checkedItems.value.length) {
         body.set(
           'checkedItems',
           [...checkedItems.value]
             .sort((a, b) => Number(a) - Number(b))
             .join(',')
         );
+      }
       const issues = Object.fromEntries(
         Object.entries(issueNotes.value)
           .filter(([, value]) => value.trim())
@@ -634,7 +740,17 @@ function act(task: Task, action: 'claim' | 'submit' | 'complete') {
       );
       if (Object.keys(issues).length)
         body.set('checklistIssues', JSON.stringify(issues));
-      for (const photo of photos.value) body.append('photos', photo);
+      const photoItemIds: Array<string | null> = [];
+      for (const itemId of requiredIds) {
+        body.append('photos', itemPhotos.value[itemId]);
+        photoItemIds.push(itemId);
+      }
+      for (const photo of photos.value) {
+        body.append('photos', photo);
+        photoItemIds.push(null);
+      }
+      if (photoItemIds.length)
+        body.set('photoItemIds', JSON.stringify(photoItemIds));
     } else if (action === 'complete') {
       body = JSON.stringify({ submittedAt: task.submittedAt });
     }
@@ -644,6 +760,7 @@ function act(task: Task, action: 'claim' | 'submit' | 'complete') {
     });
     selectedTask.value = undefined;
     photos.value = [];
+    itemPhotos.value = {};
     await load();
   });
 }
@@ -652,13 +769,16 @@ function startRectification(task: Task, index?: number) {
   sourceItemIndex.value = index;
   sourceTask.value = task;
   cadence.value = 'ONCE';
-  checklistText.value = '';
+  reviewMode.value = 'REQUIRED';
+  checklistDrafts.value = [];
   ccUsernames.value = [];
   title.value = `整改 · ${task.title}`.slice(0, 120);
   description.value =
     index === undefined
       ? ''
-      : `${task.checklist?.[index]}：${task.checklistIssues?.[index]}`;
+      : `${normalizedChecklist(task)[index]?.label}：${
+          task.checklistIssues?.[normalizedChecklist(task)[index]?.id]
+        }`;
   due.value = '';
   selected.value = [];
   errorMessage.value = '';
@@ -798,6 +918,44 @@ onUnmounted(() => {
       </div>
     </n-card>
 
+    <n-card v-if="canManage" title="门店任务执行组">
+      <n-alert type="info" :bordered="false" class="mb-3">
+        门店管理组只决定谁能共同处理本店任务，不会改变员工岗位、薪资或账号权限；组内任意一人提交后，本店任务即不再需要其他成员重复完成。
+      </n-alert>
+      <div v-for="store in managementGroups" :key="store.id" class="border-b py-3">
+        <strong>{{ store.name }} · 门店管理组</strong>
+        <n-select
+          v-model:value="store.memberEmploymentIds"
+          multiple
+          filterable
+          :options="store.employments.map((employment) => ({
+            value: employment.id,
+            label: `${employment.employee.name} · ${employment.position.name} · ${employment.employee.employeeNo}`
+          }))"
+          placeholder="选择店长、副店长、店助等执行成员"
+          :disabled="busy"
+        />
+        <n-button class="mt-2" size="small" :disabled="busy" @click="saveManagementGroup(store)">
+          保存本店执行组
+        </n-button>
+      </div>
+    </n-card>
+
+    <n-card v-if="canManage && storage" title="任务图片存储">
+      <p>
+        当前 {{ storage.count }} 张，共 {{ formatStorage(storage.bytes) }}；最近 30 天
+        {{ storage.recentCount }} 张，共 {{ formatStorage(storage.recentBytes) }}。
+      </p>
+      <p v-if="storage.draftCount">
+        另有 {{ storage.draftCount }} 张未提交暂存图片，共 {{ formatStorage(storage.draftBytes) }}，24 小时后失效，后台每小时清理。
+      </p>
+      <p>
+        上传原图单张不超过 5 MB，服务端压缩后单张不超过
+        {{ formatStorage(storage.perImageLimitBytes) }}，单次提交压缩后总量不超过
+        {{ formatStorage(storage.perSubmissionLimitBytes) }}。历史证据用于审计，不自动删除。
+      </p>
+    </n-card>
+
     <n-card
       v-if="canManage"
       id="task-dispatch"
@@ -807,7 +965,7 @@ onUnmounted(() => {
         <span
           >来源：{{ sourceTask.title }} · {{ sourceTask.store.name
           }}<template v-if="sourceItemIndex !== undefined">
-            · {{ sourceTask.checklist?.[sourceItemIndex] }}</template
+            · {{ normalizedChecklist(sourceTask)[sourceItemIndex]?.label }}</template
           ></span
         >
         <n-button
@@ -834,11 +992,40 @@ onUnmounted(() => {
           placeholder="任务说明"
           :disabled="busy"
         />
-        <n-input
-          v-model:value="checklistText"
-          type="textarea"
-          maxlength="2420"
-          placeholder="检查清单（选填，每行一项）"
+        <strong>检查清单（选填）</strong>
+        <div
+          v-for="(item, index) in checklistDrafts"
+          :key="item.id"
+          class="grid gap-2 rounded border p-2 md:grid-cols-[1fr_180px_auto]"
+        >
+          <n-input
+            v-model:value="item.label"
+            :placeholder="`检查项 ${index + 1}`"
+            maxlength="120"
+            :disabled="busy"
+          />
+          <n-select
+            v-model:value="item.mode"
+            :options="[
+              { label: '直接确认', value: 'CONFIRM' },
+              { label: '必须拍照', value: 'PHOTO_REQUIRED' }
+            ]"
+            :disabled="busy"
+          />
+          <n-button :disabled="busy" @click="removeChecklistItem(item.id)">删除</n-button>
+        </div>
+        <n-button
+          size="small"
+          :disabled="busy || checklistDrafts.length >= 20"
+          @click="addChecklistItem"
+          >添加检查项</n-button
+        >
+        <n-select
+          v-model:value="reviewMode"
+          :options="[
+            { label: '提交即完成', value: 'AUTO_COMPLETE' },
+            { label: '提交后需要审核', value: 'REQUIRED' }
+          ]"
           :disabled="busy"
         />
         <n-select
@@ -857,7 +1044,7 @@ onUnmounted(() => {
           placeholder="任务执行门店与岗位（每组生成一项任务）"
           :disabled="busy"
         />
-        <p>仅显示当前有在岗员工的岗位；同岗位员工均可看到任务，由其中一人认领执行。</p>
+        <p>可选择门店岗位或门店管理组；同一执行组只需一人提交，系统自动记录实际完成人。</p>
         <strong>结果抄送账号（选填）</strong>
         <n-select
           v-model:value="ccUsernames"
@@ -896,7 +1083,7 @@ onUnmounted(() => {
           />
         </label>
         <p v-if="recurring">
-          每个模板选择一个门店岗位。每月日期不足时，安排在当月最后一天。
+          每个所选目标生成一个循环模板。每月日期不足时，安排在当月最后一天。
         </p>
         <p v-else-if="selected.length > 50">每批最多派发 50 项任务</p>
         <n-button
@@ -904,9 +1091,7 @@ onUnmounted(() => {
           type="primary"
           :disabled="
             busy ||
-            (recurring
-              ? selected.length !== 1 || !dueHours
-              : selected.length > 50)
+            (recurring ? !selected.length || !dueHours : selected.length > 50)
           "
         >
           {{ recurring ? '创建循环模板' : '派发' }}
@@ -983,13 +1168,13 @@ onUnmounted(() => {
             检查清单 · {{ task.checklistConfirmed ? '已逐项确认' : '待确认' }}
           </summary>
           <ol class="list-decimal pl-6">
-            <li v-for="(item, index) in task.checklist" :key="item">
-              {{ item }}
+            <li v-for="(item, index) in normalizedChecklist(task)" :key="item.id">
+              {{ item.label }}{{ item.mode === 'PHOTO_REQUIRED' ? '（需拍照）' : '' }}
               <p
-                v-if="task.checklistIssues?.[index]"
+                v-if="task.checklistIssues?.[item.id]"
                 class="whitespace-pre-wrap break-words"
               >
-                异常：{{ task.checklistIssues[index] }}
+                异常：{{ task.checklistIssues[item.id] }}
               </p>
             </li>
           </ol>
@@ -1004,7 +1189,7 @@ onUnmounted(() => {
             size="small"
             @click="openPhoto(task.id, photo.id)"
           >
-            照片 {{ index + 1 }}
+            {{ photo.checklistItemId ? checklistLabel(task, photo.checklistItemId) : `照片 ${index + 1}` }}
           </n-button>
         </n-space>
         <p v-if="task.reopenHistory[0]" class="whitespace-pre-wrap">
@@ -1013,16 +1198,10 @@ onUnmounted(() => {
           }}原因：{{ task.reopenHistory[0].reason }}
         </p>
         <n-button
-          v-if="task.status === 'PENDING' && !isExpired(task)"
-          :disabled="busy"
-          @click="act(task, 'claim')"
-          >认领</n-button
-        >
-        <n-button
-          v-if="task.status === 'CLAIMED' && !isExpired(task)"
+          v-if="(task.status === 'PENDING' || task.status === 'CLAIMED') && !isExpired(task)"
           :disabled="busy"
           @click="openSubmission(task)"
-          >提交结果</n-button
+          >填写并提交</n-button
         >
       </div>
       <n-space align="center" class="mt-4">
@@ -1121,17 +1300,17 @@ onUnmounted(() => {
             检查清单 · {{ task.checklistConfirmed ? '已逐项确认' : '待确认' }}
           </summary>
           <ol class="list-decimal pl-6">
-            <li v-for="(item, index) in task.checklist" :key="item">
-              {{ item }}
+            <li v-for="(item, index) in normalizedChecklist(task)" :key="item.id">
+              {{ item.label }}{{ item.mode === 'PHOTO_REQUIRED' ? '（需拍照）' : '' }}
               <p
-                v-if="task.checklistIssues?.[index]"
+                v-if="task.checklistIssues?.[item.id]"
                 class="whitespace-pre-wrap break-words"
               >
-                异常：{{ task.checklistIssues[index] }}
+                异常：{{ task.checklistIssues[item.id] }}
               </p>
               <n-button
                 v-if="
-                  task.checklistIssues?.[index] &&
+                  task.checklistIssues?.[item.id] &&
                   !task.sourceTaskId &&
                   (task.status === 'SUBMITTED' || task.status === 'DONE')
                 "
@@ -1153,7 +1332,7 @@ onUnmounted(() => {
             size="small"
             @click="openPhoto(task.id, photo.id)"
           >
-            照片 {{ index + 1 }}
+            {{ photo.checklistItemId ? checklistLabel(task, photo.checklistItemId) : `照片 ${index + 1}` }}
           </n-button>
         </n-space>
         <details v-if="task.extensions?.length" class="my-2">
@@ -1228,7 +1407,7 @@ onUnmounted(() => {
                 :key="index"
                 class="whitespace-pre-wrap break-words"
               >
-                {{ task.checklist?.[Number(index)] }}：{{ note }}
+                {{ checklistLabel(task, index) }}：{{ note }}
               </li>
             </ul>
             <n-space v-if="entry.evidence?.length">
@@ -1420,18 +1599,28 @@ onUnmounted(() => {
           maxlength="3000"
           placeholder="填写完成说明"
         />
-        <div v-if="selectedTask?.checklist?.length" class="mt-3">
+        <div v-if="normalizedChecklist(selectedTask).length" class="mt-3">
           <p>提交前请逐项确认</p>
           <n-checkbox-group v-model:value="checkedItems" :disabled="busy">
             <n-space vertical>
               <div
-                v-for="(item, index) in selectedTask.checklist"
-                :key="item"
+                v-for="item in normalizedChecklist(selectedTask)"
+                :key="item.id"
                 class="space-y-1"
               >
-                <n-checkbox :value="index" :label="item" />
+                <n-checkbox :value="item.id" :label="item.label" />
+                <label v-if="item.mode === 'PHOTO_REQUIRED'" class="block">
+                  现场照片（必传 1 张）
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    capture="environment"
+                    :disabled="busy"
+                    @change="chooseItemPhoto(item.id, $event)"
+                  />
+                </label>
                 <n-input
-                  v-model:value="issueNotes[index]"
+                  v-model:value="issueNotes[item.id]"
                   type="textarea"
                   :autosize="{ minRows: 1, maxRows: 3 }"
                   maxlength="500"
@@ -1442,7 +1631,7 @@ onUnmounted(() => {
             </n-space>
           </n-checkbox-group>
         </div>
-        <div class="mt-3">
+        <div v-if="!structuredChecklist(selectedTask)" class="mt-3">
           <label>
             {{
               selectedTask?.sourceTaskId
@@ -1471,8 +1660,13 @@ onUnmounted(() => {
               busy ||
               !submission.trim() ||
               Boolean(photoError) ||
-              checkedItems.length !== (selectedTask?.checklist?.length ?? 0) ||
-              (Boolean(selectedTask?.sourceTaskId) && !photos.length)
+              checkedItems.length !== normalizedChecklist(selectedTask).length ||
+              normalizedChecklist(selectedTask).some(
+                (item) => item.mode === 'PHOTO_REQUIRED' && !itemPhotos[item.id]
+              ) ||
+              (Boolean(selectedTask?.sourceTaskId) &&
+                !photos.length &&
+                !Object.keys(itemPhotos).length)
             "
             @click="selectedTask && act(selectedTask, 'submit')"
             >提交</n-button

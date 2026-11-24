@@ -12,6 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   Prisma,
   type V2OperationalTaskCadence,
+  type V2OperationalTaskReviewMode,
   type V2OperationalTaskStatus
 } from '@prisma/client';
 import { resolveScopedPermission } from '../../common/scoped-permission';
@@ -22,7 +23,12 @@ import {
   type TaskReportQuery
 } from './task-report';
 import { nextTaskRun } from './task-schedule';
-import { encodeTaskEvidence } from './task-evidence';
+import {
+  encodeTaskEvidence,
+  maxEncodedEvidenceTotalSize,
+  maxLegacyEvidenceFiles,
+  maxRawEvidenceTotalSize
+} from './task-evidence';
 import { PrismaService } from '../../database/prisma.service';
 
 const operating = { status: 'OPERATING', deletedAt: null } as const;
@@ -31,7 +37,7 @@ const activeEmployee = { status: 'ACTIVE', deletedAt: null } as const;
 
 const currentEvidence = {
   where: { reopenId: null },
-  select: { id: true },
+  select: { id: true, checklistItemId: true, byteSize: true },
   orderBy: { id: 'asc' }
 } satisfies Prisma.V2OperationalTask$evidenceArgs;
 
@@ -58,7 +64,8 @@ interface DispatchInput {
   batchId: string;
   title: string;
   description: string;
-  checklist?: string[];
+  checklist?: unknown[];
+  reviewMode?: V2OperationalTaskReviewMode;
   ccUsernames?: string[];
   dueAt: string;
   sourceTaskId?: string;
@@ -69,24 +76,55 @@ interface DispatchInput {
 
 interface ScheduleInput extends Pick<
   DispatchInput,
-  'title' | 'description' | 'checklist' | 'ccUsernames'
+  'title' | 'description' | 'checklist' | 'ccUsernames' | 'reviewMode'
 > {
   requestId: string;
-  target: Pick<Target, 'storeId' | 'targetKey'>;
+  targets: Array<Pick<Target, 'storeId' | 'targetKey'>>;
   cadence: V2OperationalTaskCadence;
   firstRunAt: string;
   dueHours: number;
 }
 
-function normalizeChecklist(items?: string[] | null) {
-  const checklist = (items ?? []).map((item) => item.trim());
-  if (
-    checklist.some((item) => !item) ||
-    new Set(checklist).size !== checklist.length
-  ) {
-    throw new BadRequestException('检查项不能为空或重复');
+type ChecklistMode = 'CONFIRM' | 'PHOTO_REQUIRED';
+type ChecklistItem = { id: string; label: string; mode: ChecklistMode };
+
+export function checklistItems(value: Prisma.JsonValue | unknown[] | null | undefined) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry, index): ChecklistItem[] => {
+    if (typeof entry === 'string') {
+      const label = entry.trim();
+      return label ? [{ id: String(index), label, mode: 'CONFIRM' }] : [];
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const item = entry as Record<string, unknown>;
+    return typeof item.id === 'string' &&
+      typeof item.label === 'string' &&
+      (item.mode === 'CONFIRM' || item.mode === 'PHOTO_REQUIRED')
+      ? [{ id: item.id, label: item.label, mode: item.mode }]
+      : [];
+  });
+}
+
+export function normalizeChecklist(items?: unknown[] | null): ChecklistItem[] {
+  const checklist = checklistItems(items);
+  if (checklist.length !== (items ?? []).length) {
+    throw new BadRequestException('检查项格式无效');
   }
-  return checklist;
+  if (
+    checklist.some(
+      (item) =>
+        !/^[a-zA-Z0-9_-]{1,64}$/.test(item.id) ||
+        !item.label.trim() ||
+        item.label.trim().length > 120
+    ) ||
+    new Set(checklist.map((item) => item.id)).size !== checklist.length ||
+    new Set(checklist.map((item) => item.label.trim())).size !== checklist.length
+  ) {
+    throw new BadRequestException('检查项不能为空、重复或超过 120 字');
+  }
+  if (checklist.filter((item) => item.mode === 'PHOTO_REQUIRED').length > 12)
+    throw new BadRequestException('需要拍照的检查项最多 12 个');
+  return checklist.map((item) => ({ ...item, label: item.label.trim() }));
 }
 
 function ccNames(names?: string[] | null) {
@@ -116,7 +154,7 @@ function jsonObject(value: Prisma.JsonValue | null): Prisma.JsonObject {
     : {};
 }
 
-function parseChecklistIssues(value: string | undefined, itemCount: number) {
+function parseChecklistIssues(value: string | undefined, validIds: Set<string>) {
   if (!value) return {};
   try {
     const parsed: unknown = JSON.parse(value);
@@ -126,8 +164,7 @@ function parseChecklistIssues(value: string | undefined, itemCount: number) {
     if (
       entries.some(
         ([key, text]) =>
-          !/^(0|[1-9]\d?)$/.test(key) ||
-          Number(key) >= itemCount ||
+          !validIds.has(key) ||
           typeof text !== 'string' ||
           !text.trim() ||
           text.trim().length > 500
@@ -148,6 +185,7 @@ export class V2OperationalTasksService
 {
   private readonly logger = new Logger(V2OperationalTasksService.name);
   private scheduleTimer?: ReturnType<typeof setInterval>;
+  private draftCleanupTimer?: ReturnType<typeof setInterval>;
   private processingSchedules = false;
 
   constructor(
@@ -156,6 +194,12 @@ export class V2OperationalTasksService
   ) {}
 
   onModuleInit() {
+    this.draftCleanupTimer = setInterval(
+      () => void this.cleanupEvidenceDrafts(),
+      3_600_000
+    );
+    this.draftCleanupTimer.unref();
+    void this.cleanupEvidenceDrafts();
     if (!this.config.get<boolean>('app.backgroundJobsEnabled')) return;
     this.scheduleTimer = setInterval(
       () => void this.processSchedules(),
@@ -167,6 +211,17 @@ export class V2OperationalTasksService
 
   onModuleDestroy() {
     clearInterval(this.scheduleTimer);
+    clearInterval(this.draftCleanupTimer);
+  }
+
+  private async cleanupEvidenceDrafts() {
+    try {
+      await this.prisma.v2OperationalTaskEvidenceDraft.deleteMany({
+        where: { expiresAt: { lte: new Date() } }
+      });
+    } catch {
+      this.logger.warn('任务暂存图片清理失败，稍后重试');
+    }
   }
 
   async inbox(accountId: string) {
@@ -855,43 +910,55 @@ export class V2OperationalTasksService
     }
     return this.write(async (tx) => {
       const access = await this.manageAccess(accountId, tx);
-      if (access.storeIds && !access.storeIds.includes(input.target.storeId))
+      if (
+        access.storeIds &&
+        input.targets.some((target) => !access.storeIds?.includes(target.storeId))
+      )
         throw new ForbiddenException('无权向该门店派发任务');
-      const existing = await tx.v2OperationalTaskSchedule.findUnique({
-        where: { id: input.requestId }
+      const requested = new Set(input.targets.map((target) => this.targetId(target)));
+      const existing = await tx.v2OperationalTaskSchedule.findMany({
+        where: { createdBy: accountId, batchId: input.requestId }
       });
-      if (existing) {
-        if (
-          existing.createdBy !== accountId ||
-          existing.storeId !== input.target.storeId ||
-          existing.targetKey !== input.target.targetKey ||
-          existing.title !== title ||
-          existing.description !== description ||
-          JSON.stringify(existing.checklist ?? []) !==
-            JSON.stringify(checklist) ||
-          JSON.stringify(
-            savedCc(existing.ccRecipients).map((item) => item.username)
-          ) !== JSON.stringify(ccUsernames) ||
-          existing.cadence !== input.cadence ||
-          existing.firstRunAt.getTime() !== firstRunAt.getTime() ||
-          existing.dueHours !== input.dueHours
-        ) {
+      if (existing.length) {
+        const same =
+          existing.length === requested.size &&
+          existing.every(
+            (schedule) =>
+              requested.has(this.targetId(schedule)) &&
+              schedule.title === title &&
+              schedule.description === description &&
+              JSON.stringify(schedule.checklist ?? []) === JSON.stringify(checklist) &&
+              schedule.reviewMode === (input.reviewMode ?? 'REQUIRED') &&
+              JSON.stringify(savedCc(schedule.ccRecipients).map((item) => item.username)) ===
+                JSON.stringify(ccUsernames) &&
+              schedule.cadence === input.cadence &&
+              schedule.firstRunAt.getTime() === firstRunAt.getTime() &&
+              schedule.dueHours === input.dueHours
+          );
+        if (!same) {
           throw new ConflictException('循环模板请求已使用，请重新发起');
         }
-        return { id: existing.id };
+        return { count: existing.length };
       }
       if (firstRunAt.getTime() <= Date.now())
         throw new BadRequestException('首次派发时间必须晚于当前时间');
-      const target = (
-        await this.targets(undefined, tx, input.target.storeId)
-      ).find((item) => item.targetKey === input.target.targetKey);
-      if (!target) throw new BadRequestException('派发岗位已失效，请刷新');
-      const ccRecipients = await this.resolveCc(tx, ccUsernames, [
-        target.storeId
-      ]);
-      return tx.v2OperationalTaskSchedule.create({
-        data: {
-          id: input.requestId,
+      const candidates = new Map(
+        (await this.targets(undefined, tx)).map((target) => [this.targetId(target), target])
+      );
+      const targets = [...requested].map((key) => {
+        const target = candidates.get(key);
+        if (!target) throw new BadRequestException('循环派发目标已失效，请刷新');
+        return target;
+      });
+      const ccRecipients = await this.resolveCc(
+        tx,
+        ccUsernames,
+        [...new Set(targets.map((target) => target.storeId))]
+      );
+      await tx.v2OperationalTaskSchedule.createMany({
+        data: targets.map((target, index) => ({
+          id: `${input.requestId}:${index}`,
+          batchId: input.requestId,
           storeId: target.storeId,
           targetKey: target.targetKey,
           targetName: target.targetName,
@@ -899,15 +966,16 @@ export class V2OperationalTasksService
           description,
           checklist,
           ccRecipients,
+          reviewMode: input.reviewMode ?? 'REQUIRED',
           cadence: input.cadence,
           dueHours: input.dueHours,
           firstRunAt,
           nextRunAt: firstRunAt,
           createdBy: accountId,
           scheduledBy: accountId
-        },
-        select: { id: true }
+        }))
       });
+      return { count: targets.length };
     });
   }
 
@@ -1033,6 +1101,7 @@ export class V2OperationalTasksService
           checklist: Array.isArray(schedule.checklist)
             ? schedule.checklist
             : [],
+          reviewMode: schedule.reviewMode,
           createdBy: schedule.scheduledBy,
           dueAt: new Date(slot.getTime() + duration)
         }
@@ -1045,6 +1114,154 @@ export class V2OperationalTasksService
     return (await this.targets()).filter(
       (target) => !access.storeIds || access.storeIds.includes(target.storeId)
     );
+  }
+
+  async managementGroups(accountId: string) {
+    const access = await this.manageAccess(accountId, this.prisma);
+    const day = new Date(
+      new Date(Date.now() + 28_800_000).toISOString().slice(0, 10)
+    );
+    const stores = await this.prisma.v2Store.findMany({
+      where: {
+        ...operating,
+        id: access.storeIds ? { in: access.storeIds } : undefined
+      },
+      select: {
+        id: true,
+        name: true,
+        operationalTaskExecutorGroups: {
+          where: { code: 'management' },
+          select: {
+            id: true,
+            members: { select: { employmentId: true } }
+          },
+          take: 1
+        },
+        employments: {
+          where: {
+            startedOn: { lte: day },
+            endedOn: null,
+            deletedAt: null,
+            employee: activeEmployee,
+            position: activePosition
+          },
+          select: {
+            id: true,
+            employee: { select: { name: true, employeeNo: true } },
+            position: { select: { name: true } }
+          },
+          orderBy: [{ employee: { name: 'asc' } }, { id: 'asc' }]
+        }
+      },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }]
+    });
+    return stores.map(({ operationalTaskExecutorGroups, ...store }) => ({
+      ...store,
+      groupId: operationalTaskExecutorGroups[0]?.id ?? null,
+      memberEmploymentIds:
+        operationalTaskExecutorGroups[0]?.members.map((member) => member.employmentId) ?? []
+    }));
+  }
+
+  async saveManagementGroup(
+    accountId: string,
+    storeId: string,
+    rawEmploymentIds: string[]
+  ) {
+    const employmentIds = [...new Set(rawEmploymentIds)];
+    return this.write(async (tx) => {
+      const access = await this.manageAccess(accountId, tx);
+      if (access.storeIds && !access.storeIds.includes(storeId))
+        throw new ForbiddenException('无权维护该门店任务执行组');
+      const day = new Date(
+        new Date(Date.now() + 28_800_000).toISOString().slice(0, 10)
+      );
+      const valid = await tx.v2Employment.findMany({
+        where: {
+          id: { in: employmentIds },
+          storeId,
+          startedOn: { lte: day },
+          endedOn: null,
+          deletedAt: null,
+          employee: activeEmployee,
+          position: activePosition,
+          store: operating
+        },
+        select: { id: true }
+      });
+      if (valid.length !== employmentIds.length)
+        throw new BadRequestException('执行组成员已离职、调店或任职失效，请刷新');
+      const group = await tx.v2OperationalTaskExecutorGroup.upsert({
+        where: { storeId_code: { storeId, code: 'management' } },
+        create: {
+          storeId,
+          code: 'management',
+          name: '门店管理组',
+          enabled: employmentIds.length > 0,
+          createdBy: accountId,
+          updatedBy: accountId
+        },
+        update: {
+          enabled: employmentIds.length > 0,
+          updatedBy: accountId
+        },
+        select: { id: true }
+      });
+      await tx.v2OperationalTaskExecutorGroupMember.deleteMany({
+        where: { groupId: group.id }
+      });
+      if (employmentIds.length) {
+        await tx.v2OperationalTaskExecutorGroupMember.createMany({
+          data: employmentIds.map((employmentId) => ({
+            groupId: group.id,
+            employmentId,
+            createdBy: accountId
+          }))
+        });
+      }
+      return { groupId: group.id, members: employmentIds.length };
+    });
+  }
+
+  async evidenceStorage(accountId: string) {
+    const access = await this.manageAccess(accountId, this.prisma);
+    const where: Prisma.V2OperationalTaskEvidenceWhereInput = {
+      task: {
+        store: { deletedAt: null },
+        storeId: access.storeIds ? { in: access.storeIds } : undefined
+      }
+    };
+    const since = new Date(Date.now() - 30 * 86_400_000);
+    const [all, recent, drafts] = await Promise.all([
+      this.prisma.v2OperationalTaskEvidence.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: { byteSize: true }
+      }),
+      this.prisma.v2OperationalTaskEvidence.aggregate({
+        where: { ...where, createdAt: { gte: since } },
+        _count: { _all: true },
+        _sum: { byteSize: true }
+      }),
+      this.prisma.v2OperationalTaskEvidenceDraft.aggregate({
+        where: {
+          expiresAt: { gt: new Date() },
+          task: where.task
+        },
+        _count: { _all: true },
+        _sum: { byteSize: true }
+      })
+    ]);
+    return {
+      count: all._count._all,
+      bytes: all._sum.byteSize ?? 0,
+      recentCount: recent._count._all,
+      recentBytes: recent._sum.byteSize ?? 0,
+      draftCount: drafts._count._all,
+      draftBytes: drafts._sum.byteSize ?? 0,
+      perImageLimitBytes: 768 * 1024,
+      perSubmissionLimitBytes: maxEncodedEvidenceTotalSize
+    };
   }
 
   async ccOptions(accountId: string, rawStoreIds: string[]) {
@@ -1158,6 +1375,7 @@ export class V2OperationalTasksService
           title: true,
           description: true,
           checklist: true,
+          reviewMode: true,
           ccRecipients: true,
           dueAt: true,
           originalDueAt: true,
@@ -1175,6 +1393,7 @@ export class V2OperationalTasksService
               task.description === description &&
               JSON.stringify(task.checklist ?? []) ===
                 JSON.stringify(checklist) &&
+              task.reviewMode === (input.reviewMode ?? 'REQUIRED') &&
               (task.originalDueAt ?? task.dueAt).getTime() ===
                 dueAt.getTime() &&
               task.sourceTaskId === sourceTaskId &&
@@ -1215,12 +1434,11 @@ export class V2OperationalTasksService
           throw new BadRequestException('整改须来自本门店已提交的原任务');
         }
         if (sourceItemIndex !== null) {
-          const label = Array.isArray(source.checklist)
-            ? source.checklist[sourceItemIndex]
+          const sourceItem = checklistItems(source.checklist)[sourceItemIndex];
+          const label = sourceItem?.label;
+          const reason = sourceItem
+            ? jsonObject(source.checklistIssues)[sourceItem.id]
             : null;
-          const reason = jsonObject(source.checklistIssues)[
-            String(sourceItemIndex)
-          ];
           if (
             !sourceSubmittedAt ||
             source.submittedAt?.toISOString() !== sourceSubmittedAt ||
@@ -1267,6 +1485,7 @@ export class V2OperationalTasksService
           title,
           description,
           checklist,
+          reviewMode: input.reviewMode ?? 'REQUIRED',
           ccRecipients,
           dueAt,
           batchId: input.batchId,
@@ -1335,63 +1554,239 @@ export class V2OperationalTasksService
     return photo.image;
   }
 
+  async uploadEvidenceDraft(
+    accountId: string,
+    taskId: string,
+    photo: Buffer | undefined,
+    checklistItemId?: string
+  ) {
+    if (!photo) throw new BadRequestException('请选择照片');
+    const encoded = await encodeTaskEvidence(photo);
+    return this.write(async (tx) => {
+      const { task, employeeId } = await this.employeeTask(tx, accountId, taskId);
+      if (
+        !['PENDING', 'CLAIMED'].includes(task.status) ||
+        (task.status === 'CLAIMED' && task.claimerId !== employeeId) ||
+        task.dueAt.getTime() <= Date.now()
+      )
+        throw new ConflictException('任务已被处理或已截止，请刷新');
+      const items = checklistItems(task.checklist);
+      if (checklistItemId) {
+        const item = items.find((entry) => entry.id === checklistItemId);
+        if (!item || item.mode !== 'PHOTO_REQUIRED')
+          throw new BadRequestException('照片检查项无效');
+      } else if (items.some((item) => item.mode === 'PHOTO_REQUIRED')) {
+        throw new BadRequestException('请选择照片对应的检查项');
+      }
+      await tx.v2OperationalTaskEvidenceDraft.deleteMany({
+        where: {
+          OR: [
+            { expiresAt: { lte: new Date() } },
+            { taskId, employeeId, checklistItemId: checklistItemId ?? null }
+          ]
+        }
+      });
+      const existing = await tx.v2OperationalTaskEvidenceDraft.aggregate({
+        where: { taskId, employeeId, expiresAt: { gt: new Date() } },
+        _sum: { byteSize: true }
+      });
+      if ((existing._sum.byteSize ?? 0) + encoded.byteSize > maxEncodedEvidenceTotalSize)
+        throw new BadRequestException('暂存照片总量超过 9 MB，请减少照片');
+      return tx.v2OperationalTaskEvidenceDraft.create({
+        data: {
+          taskId,
+          employeeId,
+          checklistItemId: checklistItemId ?? null,
+          image: encoded.image,
+          byteSize: encoded.byteSize,
+          width: encoded.width,
+          height: encoded.height,
+          expiresAt: new Date(Date.now() + 24 * 3_600_000)
+        },
+        select: { id: true, checklistItemId: true, byteSize: true, expiresAt: true }
+      });
+    });
+  }
+
   async submit(
     accountId: string,
     id: string,
     text: string,
     photos: Buffer[],
     checkedItems?: string,
-    issueText?: string
+    issueText?: string,
+    confirmedItemsText?: string,
+    photoItemIdsText?: string,
+    evidenceDraftIdsText?: string
   ) {
     const submission = text.trim();
     if (!submission) throw new BadRequestException('请填写完成说明');
+    if (photos.reduce((sum, photo) => sum + photo.length, 0) > maxRawEvidenceTotalSize)
+      throw new BadRequestException('本次上传原图总量超过 24 MB，请压缩或减少照片');
     const before = await this.employeeTask(this.prisma, accountId, id);
-    if (before.task.claimerId !== before.employeeId)
-      throw new ForbiddenException('只有任务认领人可提交');
-    if (before.task.status === 'SUBMITTED') return { status: 'SUBMITTED' };
     if (
-      before.task.status !== 'CLAIMED' ||
+      (before.task.status === 'SUBMITTED' || before.task.status === 'DONE') &&
+      before.task.claimerId === before.employeeId
+    )
+      return { status: before.task.status };
+    if (
+      !(
+        before.task.status === 'PENDING' ||
+        (before.task.status === 'CLAIMED' &&
+          before.task.claimerId === before.employeeId)
+      ) ||
       before.task.dueAt.getTime() <= Date.now()
     )
       throw new ConflictException('任务状态已变更或已截止，请刷新待办');
-    if (before.task.sourceTaskId && !photos.length)
-      throw new BadRequestException('请至少上传一张整改照片');
-    const checklist = Array.isArray(before.task.checklist)
-      ? before.task.checklist
-      : [];
-    const expected = checklist.map((_, index) => String(index)).join(',');
-    if (expected && checkedItems !== expected) {
+    const checklist = checklistItems(before.task.checklist);
+    const structured =
+      Array.isArray(before.task.checklist) &&
+      before.task.checklist.some((item) => typeof item === 'object');
+    let confirmedIds: string[] = [];
+    try {
+      confirmedIds = structured
+        ? (JSON.parse(confirmedItemsText ?? '[]') as string[])
+        : (checkedItems?.split(',').filter(Boolean) ?? []);
+    } catch {
+      throw new BadRequestException('检查项确认数据无效');
+    }
+    const expectedIds = checklist.map((item) => item.id).sort();
+    if (
+      confirmedIds.length !== expectedIds.length ||
+      [...new Set(confirmedIds)].sort().join(',') !== expectedIds.join(',')
+    ) {
       throw new BadRequestException('请逐项确认检查清单后再提交');
     }
-    const checklistIssues = parseChecklistIssues(issueText, checklist.length);
+    let photoItemIds: Array<string | null> = [];
+    try {
+      photoItemIds = photoItemIdsText
+        ? (JSON.parse(photoItemIdsText) as Array<string | null>)
+        : photos.map(() => null);
+    } catch {
+      throw new BadRequestException('照片检查项关联无效');
+    }
+    if (
+      photoItemIds.length !== photos.length ||
+      photoItemIds.some((itemId) => itemId !== null && typeof itemId !== 'string')
+    )
+      throw new BadRequestException('照片检查项关联无效');
+    let evidenceDraftIds: string[] = [];
+    try {
+      evidenceDraftIds = evidenceDraftIdsText
+        ? (JSON.parse(evidenceDraftIdsText) as string[])
+        : [];
+    } catch {
+      throw new BadRequestException('暂存照片数据无效');
+    }
+    if (
+      !Array.isArray(evidenceDraftIds) ||
+      evidenceDraftIds.some((draftId) => typeof draftId !== 'string') ||
+      new Set(evidenceDraftIds).size !== evidenceDraftIds.length
+    )
+      throw new BadRequestException('暂存照片数据无效');
+    const drafts = evidenceDraftIds.length
+      ? await this.prisma.v2OperationalTaskEvidenceDraft.findMany({
+          where: {
+            id: { in: evidenceDraftIds },
+            taskId: id,
+            employeeId: before.employeeId,
+            expiresAt: { gt: new Date() }
+          }
+        })
+      : [];
+    if (drafts.length !== evidenceDraftIds.length)
+      throw new BadRequestException('暂存照片已失效，请重新选择');
+    const allPhotoItemIds = [
+      ...photoItemIds,
+      ...drafts.map((draft) => draft.checklistItemId)
+    ];
+    if (!structured && photos.length + drafts.length > maxLegacyEvidenceFiles)
+      throw new BadRequestException('旧版任务最多上传 3 张照片');
+    const requiredIds = new Set(
+      checklist.filter((item) => item.mode === 'PHOTO_REQUIRED').map((item) => item.id)
+    );
+    if (
+      structured &&
+      (allPhotoItemIds.some((itemId) => !itemId || !requiredIds.has(itemId)) ||
+        [...requiredIds].some(
+          (itemId) => allPhotoItemIds.filter((value) => value === itemId).length !== 1
+        ))
+    )
+      throw new BadRequestException('每个拍照检查项必须且只能上传一张对应照片');
+    if (before.task.sourceTaskId && !photos.length && !drafts.length)
+      throw new BadRequestException('请至少上传一张整改照片');
+    const checklistIssues = parseChecklistIssues(
+      issueText,
+      new Set(checklist.map((item) => item.id))
+    );
     const images: Array<Awaited<ReturnType<typeof encodeTaskEvidence>>> = [];
     for (const photo of photos) images.push(await encodeTaskEvidence(photo));
+    if (
+      images.reduce((sum, image) => sum + image.byteSize, 0) +
+        drafts.reduce((sum, draft) => sum + draft.byteSize, 0) >
+      maxEncodedEvidenceTotalSize
+    )
+      throw new BadRequestException('本次照片压缩后总量超过 9 MB，请减少照片');
     return this.write(async (tx) => {
       const { employeeId, task } = await this.employeeTask(tx, accountId, id);
-      if (task.status === 'SUBMITTED' && task.claimerId === employeeId)
-        return { status: 'SUBMITTED' };
+      if (
+        (task.status === 'SUBMITTED' || task.status === 'DONE') &&
+        task.claimerId === employeeId
+      )
+        return { status: task.status };
       const now = new Date();
+      const finalStatus = task.reviewMode === 'AUTO_COMPLETE' ? 'DONE' : 'SUBMITTED';
       const result = await tx.v2OperationalTask.updateMany({
         where: {
           id,
-          claimerId: employeeId,
-          status: 'CLAIMED',
-          claimedAt: before.task.claimedAt,
+          OR: [
+            { status: 'PENDING', claimerId: null },
+            { status: 'CLAIMED', claimerId: employeeId, claimedAt: task.claimedAt }
+          ],
           dueAt: { gt: now }
         },
         data: {
-          status: 'SUBMITTED',
+          status: finalStatus,
+          claimerId: employeeId,
+          claimerName: before.employeeName,
+          claimedAt: task.claimedAt ?? now,
           submission,
           submittedAt: now,
+          reviewedBy: finalStatus === 'DONE' ? accountId : null,
+          reviewedAt: finalStatus === 'DONE' ? now : null,
           checklistConfirmed: checklist.length > 0,
           checklistIssues
         }
       });
       if (!result.count)
         throw new ConflictException('任务状态已变更或已截止，请刷新待办');
-      for (const image of images) {
+      for (const [index, image] of images.entries()) {
         await tx.v2OperationalTaskEvidence.create({
-          data: { taskId: id, image }
+          data: {
+            taskId: id,
+            image: image.image,
+            checklistItemId: photoItemIds[index],
+            byteSize: image.byteSize,
+            width: image.width,
+            height: image.height
+          }
+        });
+      }
+      for (const draft of drafts) {
+        await tx.v2OperationalTaskEvidence.create({
+          data: {
+            taskId: id,
+            image: draft.image,
+            checklistItemId: draft.checklistItemId,
+            byteSize: draft.byteSize,
+            width: draft.width,
+            height: draft.height
+          }
+        });
+      }
+      if (drafts.length) {
+        await tx.v2OperationalTaskEvidenceDraft.deleteMany({
+          where: { id: { in: drafts.map((draft) => draft.id) } }
         });
       }
       const recipients = [
@@ -1409,7 +1804,7 @@ export class V2OperationalTasksService
             }))
         ]
       });
-      return { status: 'SUBMITTED' };
+      return { status: finalStatus };
     });
   }
 
@@ -1673,7 +2068,7 @@ export class V2OperationalTasksService
       deletedAt: null,
       employee: activeEmployee
     };
-    const [store, org] = await Promise.all([
+    const [store, org, groups] = await Promise.all([
       db.v2Employment.findMany({
         where: {
           ...current,
@@ -1697,6 +2092,36 @@ export class V2OperationalTasksService
           costStore: { select: { id: true, name: true } },
           position: { select: { id: true, name: true } }
         }
+      }),
+      db.v2OperationalTaskExecutorGroup.findMany({
+        where: {
+          enabled: true,
+          storeId,
+          store: operating,
+          members: {
+            some: {
+              employment: {
+                ...current,
+                storeId: storeId ?? undefined,
+                position: activePosition
+              }
+            }
+          },
+          ...(employeeId
+            ? {
+                members: {
+                  some: {
+                    employment: {
+                      ...current,
+                      storeId: storeId ?? undefined,
+                      position: activePosition
+                    }
+                  }
+                }
+              }
+            : {})
+        },
+        select: { id: true, name: true, store: { select: { id: true, name: true } } }
       })
     ]);
     const targets: Target[] = [
@@ -1717,7 +2142,13 @@ export class V2OperationalTasksService
               }
             ]
           : []
-      )
+      ),
+      ...groups.map((group) => ({
+        storeId: group.store.id,
+        storeName: group.store.name,
+        targetKey: `group:${group.id}`,
+        targetName: group.name
+      }))
     ];
     return [
       ...new Map(

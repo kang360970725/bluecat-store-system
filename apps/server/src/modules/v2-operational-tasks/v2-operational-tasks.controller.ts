@@ -8,10 +8,11 @@ import {
   Query,
   Res,
   UploadedFiles,
+  UploadedFile,
   UseInterceptors,
   UseGuards
 } from '@nestjs/common';
-import { FilesInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import type { CurrentUser } from '@bluecat/shared';
 import { Type } from 'class-transformer';
@@ -24,10 +25,8 @@ import {
   IsInt,
   IsISO8601,
   IsOptional,
-  IsObject,
   IsString,
   IsUUID,
-  IsDefined,
   Length,
   Matches,
   Max,
@@ -103,8 +102,20 @@ class TargetDto {
   @Length(1, 100)
   storeId!: string;
 
-  @Matches(/^(store|org):[a-z0-9_-]{1,100}$/i)
+  @Matches(/^(store|org|group):[a-z0-9_-]{1,100}$/i)
   targetKey!: string;
+}
+
+class ChecklistItemDto {
+  @Matches(/^[a-zA-Z0-9_-]{1,64}$/)
+  id!: string;
+
+  @IsString()
+  @Length(1, 120)
+  label!: string;
+
+  @IsIn(['CONFIRM', 'PHOTO_REQUIRED'])
+  mode!: 'CONFIRM' | 'PHOTO_REQUIRED';
 }
 
 class CcOptionsDto {
@@ -129,9 +140,13 @@ class DispatchDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @Length(1, 120, { each: true })
-  checklist?: string[];
+  @ValidateNested({ each: true })
+  @Type(() => ChecklistItemDto)
+  checklist?: ChecklistItemDto[];
+
+  @IsOptional()
+  @IsIn(['REQUIRED', 'AUTO_COMPLETE'])
+  reviewMode?: 'REQUIRED' | 'AUTO_COMPLETE';
 
   @IsOptional()
   @IsArray()
@@ -183,9 +198,13 @@ class ScheduleDto {
   @IsOptional()
   @IsArray()
   @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @Length(1, 120, { each: true })
-  checklist?: string[];
+  @ValidateNested({ each: true })
+  @Type(() => ChecklistItemDto)
+  checklist?: ChecklistItemDto[];
+
+  @IsOptional()
+  @IsIn(['REQUIRED', 'AUTO_COMPLETE'])
+  reviewMode?: 'REQUIRED' | 'AUTO_COMPLETE';
 
   @IsOptional()
   @IsArray()
@@ -194,11 +213,12 @@ class ScheduleDto {
   @Length(1, 100, { each: true })
   ccUsernames?: string[];
 
-  @IsDefined()
-  @IsObject()
-  @ValidateNested()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
   @Type(() => TargetDto)
-  target!: TargetDto;
+  targets!: TargetDto[];
 
   @IsIn(['DAILY', 'WEEKLY', 'MONTHLY'])
   cadence!: 'DAILY' | 'WEEKLY' | 'MONTHLY';
@@ -232,6 +252,35 @@ class SubmitDto {
   @IsString()
   @Length(2, 12000)
   checklistIssues?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(2, 4000)
+  confirmedItems?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(2, 4000)
+  photoItemIds?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(2, 4000)
+  evidenceDraftIds?: string;
+}
+
+class EvidenceDraftDto {
+  @IsOptional()
+  @Matches(/^[a-zA-Z0-9_-]{1,64}$/)
+  checklistItemId?: string;
+}
+
+class ManagementGroupDto {
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  @Length(1, 100, { each: true })
+  employmentIds!: string[];
 }
 
 class RequestExtensionDto {
@@ -363,6 +412,27 @@ export class V2OperationalTasksController {
     return this.tasks.dispatchTargets(user.id);
   }
 
+  @Get('management-groups')
+  @Header('Cache-Control', 'no-store')
+  managementGroups(@CurrentUserInfo() user: CurrentUser) {
+    return this.tasks.managementGroups(user.id);
+  }
+
+  @Post('management-groups/:storeId')
+  saveManagementGroup(
+    @CurrentUserInfo() user: CurrentUser,
+    @Param('storeId') storeId: string,
+    @Body() body: ManagementGroupDto
+  ) {
+    return this.tasks.saveManagementGroup(user.id, storeId, body.employmentIds);
+  }
+
+  @Get('evidence-storage')
+  @Header('Cache-Control', 'no-store')
+  evidenceStorage(@CurrentUserInfo() user: CurrentUser) {
+    return this.tasks.evidenceStorage(user.id);
+  }
+
   @Get('cc-options')
   @Header('Cache-Control', 'no-store')
   ccOptions(@CurrentUserInfo() user: CurrentUser, @Query() query: CcOptionsDto) {
@@ -423,6 +493,24 @@ export class V2OperationalTasksController {
     response.type('image/jpeg').send(Buffer.from(image));
   }
 
+  @Post(':id/evidence-drafts')
+  @UseInterceptors(
+    FileInterceptor('photo', { limits: { fileSize: maxEvidenceFileSize, fields: 2 } })
+  )
+  uploadEvidenceDraft(
+    @CurrentUserInfo() user: CurrentUser,
+    @Param('id') id: string,
+    @Body() body: EvidenceDraftDto,
+    @UploadedFile() photo?: { buffer: Buffer }
+  ) {
+    return this.tasks.uploadEvidenceDraft(
+      user.id,
+      id,
+      photo?.buffer,
+      body.checklistItemId
+    );
+  }
+
   @Post(':id/submit')
   @UseInterceptors(
     FilesInterceptor('photos', maxEvidenceFiles, {
@@ -441,7 +529,10 @@ export class V2OperationalTasksController {
       body.submission,
       photos?.map((photo) => photo.buffer) ?? [],
       body.checkedItems,
-      body.checklistIssues
+      body.checklistIssues,
+      body.confirmedItems,
+      body.photoItemIds,
+      body.evidenceDraftIds
     );
   }
 

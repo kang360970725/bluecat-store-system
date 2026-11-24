@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-11-21
+Last updated: 2026-11-24
 
 ## Repository baseline
 
@@ -32,6 +32,9 @@ Last updated: 2026-11-21
 - Production build and upload scripts plus Prisma migrations.
 
 ## In progress: employee mini-program attendance
+
+- An operations-test follow-up is implemented on `codex/operational-task-workflow-v2` and awaits database/HTTP acceptance and review. Store-scoped `门店管理组` targets are maintained separately from positions and authorization roles; one-time and recurring dispatch support multiple targets; new checklist items choose direct confirmation or one required item-level photo; submission can auto-complete or wait for review; and employees can submit without a visible claim step. Historical string checklists, task-level photos and the claim endpoint remain compatible.
+- Task image storage now records compressed byte size and item ownership. Source files remain capped at 5 MB, the request at 24 MB, encoded JPEGs at 768 KiB each and a submission at 9 MB. The Web page reports retained and recent evidence usage. The mini program uploads one employee-scoped draft at a time for WeChat compatibility; drafts expire after 24 hours and the background worker clears expired rows hourly. Submitted and returned evidence remains private and audit-retained. Prisma generation, lint, typecheck, Web/server build, V2 regression, mini-program typecheck and mini-program build pass. A fresh isolated MySQL 8.0.46 instance applied all 70 migrations; the three new tables and four evidence metadata columns were verified before the temporary instance was removed.
 
 - Employee onboarding position selection was traced to missing formal store positions: 14 active stores had none and the other two had only legacy/default rows after acceptance fixtures were removed. Commit `6b03804c` and migration `20261121153000_seed_store_operational_positions` were deployed on 2026-11-21 after the paired backup at `/opt/bluecat-store-system/.release-backups/store-positions-before-6b03804c-20261121163008` passed checksum, gzip, rollback-artifact and migration-ledger verification. The migration added the confirmed 收银、外场、客服、吧员 and 机动岗 central templates, inherited all five to each of 16 active stores, and archived unused `测试·` templates. The employee form now loads the dedicated scoped positions endpoint, filters disabled positions, auto-loads for a single authorized store, and displays loading, error, and unconfigured-store states. Post-deploy checks found HTTPS 200, PM2 online, the protected positions endpoint returning 401 without authentication, all 68 migrations current, all 16 active stores holding the five formal positions, and no active `测试·` template. Rollback restores the paired backup and reloads PM2.
 - Production deployment completed on 2026-11-20 from commit `c84bc6be`. Migration `20261120190000_add_attendance_wifi_networks` is applied and all 67 migrations are current. The verified pre-deploy application/database backup and checksum manifest are stored at `/opt/bluecat-store-system/.release-backups/wifi-attendance-before-c84bc6be`. Post-deploy checks found HTTPS 200, PM2 online, the protected Wi-Fi configuration route registered, invalid Wi-Fi punch input rejected, the retired QR code route absent, and no startup error. Rollback is restoration of the paired application and database backup followed by PM2 reload.

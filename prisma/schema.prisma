@@ -724,6 +724,7 @@ model V2OrganizationEmployment {
 model V2Store {
   operationalTaskSchedules V2OperationalTaskSchedule[]
   operationalTasks V2OperationalTask[]
+  operationalTaskExecutorGroups V2OperationalTaskExecutorGroup[]
   attendanceTerminals V2AttendanceTerminal[]
   attendanceWifiNetworks V2AttendanceWifiNetwork[]
   id                        String                       @id @default(cuid())
@@ -1168,6 +1169,7 @@ model V2Employee {
   payrollResults          V2PayrollEmployeeResult[]
   payrollAdjustments      V2PayrollAdjustment[]
   payrollProfiles         V2EmployeePayrollProfile[]
+  operationalTaskEvidenceDrafts V2OperationalTaskEvidenceDraft[]
   createdAt               DateTime                   @default(now()) @map("created_at")
   updatedAt               DateTime                   @updatedAt @map("updated_at")
   createdBy               String?                    @map("created_by")
@@ -1384,6 +1386,7 @@ model V2Employment {
   isPrimary  Boolean               @default(true) @map("is_primary")
   compensationType String          @default("MONTHLY") @map("compensation_type") @db.VarChar(12)
   histories  V2EmploymentHistory[]
+  operationalTaskGroups V2OperationalTaskExecutorGroupMember[]
   createdAt  DateTime              @default(now()) @map("created_at")
   updatedAt  DateTime              @updatedAt @map("updated_at")
   createdBy  String?               @map("created_by")
@@ -2367,6 +2370,11 @@ enum V2OperationalTaskStatus {
   DONE
 }
 
+enum V2OperationalTaskReviewMode {
+  REQUIRED
+  AUTO_COMPLETE
+}
+
 model V2OperationalTask {
   checklistIssues Json? @map("checklist_issues")
   sourceIssue Json? @map("source_issue")
@@ -2379,6 +2387,8 @@ model V2OperationalTask {
   scheduledFor DateTime? @map("scheduled_for")
   schedule V2OperationalTaskSchedule? @relation(fields: [scheduleId], references: [id], onDelete: Restrict)
   evidence V2OperationalTaskEvidence[]
+  evidenceDrafts V2OperationalTaskEvidenceDraft[]
+  reviewMode V2OperationalTaskReviewMode @default(REQUIRED) @map("review_mode")
   sourceTaskId String? @map("source_task_id")
   sourceTask V2OperationalTask? @relation("V2OperationalTaskRectifications", fields: [sourceTaskId], references: [id], onDelete: Restrict)
   rectifications V2OperationalTask[] @relation("V2OperationalTaskRectifications")
@@ -2442,11 +2452,35 @@ model V2OperationalTaskEvidence {
   reopenId    String?                  @map("reopen_id")
   reopen      V2OperationalTaskReopen? @relation(fields: [reopenId], references: [id], onDelete: Restrict)
   image       Bytes                    @db.MediumBlob
+  checklistItemId String?              @map("checklist_item_id") @db.VarChar(64)
+  byteSize    Int                      @default(0) @map("byte_size")
+  width       Int?
+  height      Int?
   createdAt   DateTime                 @default(now()) @map("created_at")
 
   @@index([taskId, reopenId])
+  @@index([taskId, checklistItemId])
   @@index([reopenId])
   @@map("v2_operational_task_evidence")
+}
+
+model V2OperationalTaskEvidenceDraft {
+  id              String            @id @default(cuid())
+  taskId          String            @map("task_id")
+  task            V2OperationalTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  employeeId      String            @map("employee_id")
+  employee        V2Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  checklistItemId String?           @map("checklist_item_id") @db.VarChar(64)
+  image           Bytes             @db.MediumBlob
+  byteSize        Int               @map("byte_size")
+  width           Int?
+  height          Int?
+  expiresAt       DateTime          @map("expires_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  @@index([taskId, employeeId, expiresAt])
+  @@index([expiresAt])
+  @@map("v2_operational_task_evidence_drafts")
 }
 
 enum V2OperationalTaskCadence {
@@ -2458,6 +2492,8 @@ enum V2OperationalTaskCadence {
 model V2OperationalTaskSchedule {
   ccRecipients Json? @map("cc_recipients")
   checklist Json?
+  batchId       String                   @map("batch_id") @db.VarChar(64)
+  reviewMode    V2OperationalTaskReviewMode @default(REQUIRED) @map("review_mode")
   id            String                   @id @default(cuid())
   storeId       String                   @map("store_id")
   store         V2Store                  @relation(fields: [storeId], references: [id])
@@ -2479,7 +2515,40 @@ model V2OperationalTaskSchedule {
 
   @@index([enabled, nextRunAt])
   @@index([storeId, createdAt])
+  @@unique([createdBy, batchId, storeId, targetKey], map: "v2_operational_task_schedules_batch_target_key")
   @@map("v2_operational_task_schedules")
+}
+
+model V2OperationalTaskExecutorGroup {
+  id        String   @id @default(cuid())
+  storeId   String   @map("store_id")
+  store     V2Store  @relation(fields: [storeId], references: [id])
+  code      String   @db.VarChar(40)
+  name      String   @db.VarChar(80)
+  enabled   Boolean  @default(true)
+  members   V2OperationalTaskExecutorGroupMember[]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String?  @map("created_by")
+  updatedBy String?  @map("updated_by")
+
+  @@unique([storeId, code])
+  @@index([storeId, enabled])
+  @@map("v2_operational_task_executor_groups")
+}
+
+model V2OperationalTaskExecutorGroupMember {
+  id           String                         @id @default(cuid())
+  groupId      String                         @map("group_id")
+  group        V2OperationalTaskExecutorGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  employmentId String                         @map("employment_id")
+  employment   V2Employment                   @relation(fields: [employmentId], references: [id], onDelete: Restrict)
+  createdAt    DateTime                       @default(now()) @map("created_at")
+  createdBy    String?                        @map("created_by")
+
+  @@unique([groupId, employmentId])
+  @@index([employmentId])
+  @@map("v2_operational_task_executor_group_members")
 }
 
 enum V2OperationalTaskExtensionStatus {
