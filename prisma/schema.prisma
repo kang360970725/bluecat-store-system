@@ -2451,7 +2451,12 @@ model V2OperationalTaskEvidence {
   task        V2OperationalTask        @relation(fields: [taskId], references: [id])
   reopenId    String?                  @map("reopen_id")
   reopen      V2OperationalTaskReopen? @relation(fields: [reopenId], references: [id], onDelete: Restrict)
-  image       Bytes                    @db.MediumBlob
+  image       Bytes?                   @db.MediumBlob
+  storageProvider V2OperationalTaskEvidenceStorage @default(DATABASE) @map("storage_provider")
+  objectKey   String?                  @unique @map("object_key") @db.VarChar(191)
+  etag        String?                  @db.VarChar(191)
+  checksumSha256 String?               @map("checksum_sha256") @db.Char(64)
+  contentType String                   @default("image/jpeg") @map("content_type") @db.VarChar(64)
   checklistItemId String?              @map("checklist_item_id") @db.VarChar(64)
   byteSize    Int                      @default(0) @map("byte_size")
   width       Int?
@@ -2471,7 +2476,10 @@ model V2OperationalTaskEvidenceDraft {
   employeeId      String            @map("employee_id")
   employee        V2Employee        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
   checklistItemId String?           @map("checklist_item_id") @db.VarChar(64)
-  image           Bytes             @db.MediumBlob
+  objectKey       String            @unique @map("object_key") @db.VarChar(191)
+  etag            String?           @db.VarChar(191)
+  checksumSha256  String            @map("checksum_sha256") @db.Char(64)
+  contentType     String            @default("image/jpeg") @map("content_type") @db.VarChar(64)
   byteSize        Int               @map("byte_size")
   width           Int?
   height          Int?
@@ -2481,6 +2489,11 @@ model V2OperationalTaskEvidenceDraft {
   @@index([taskId, employeeId, expiresAt])
   @@index([expiresAt])
   @@map("v2_operational_task_evidence_drafts")
+}
+
+enum V2OperationalTaskEvidenceStorage {
+  DATABASE
+  S3
 }
 
 enum V2OperationalTaskCadence {

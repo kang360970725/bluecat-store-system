@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { ConfigService } from '@nestjs/config';
 import sharp from 'sharp';
 import {
   encodeTaskEvidence,
@@ -6,7 +7,11 @@ import {
   maxEncodedEvidenceTotalSize,
   maxEvidenceFiles
 } from './task-evidence';
-import { checklistItems, normalizeChecklist } from './v2-operational-tasks.service';
+import {
+  checklistItems,
+  normalizeChecklist
+} from './v2-operational-tasks.service';
+import { TaskEvidenceObjectStorage } from './task-evidence-storage';
 
 async function main() {
   const legacy = normalizeChecklist(['门口整洁', '吧台无私人物品']);
@@ -51,6 +56,37 @@ async function main() {
   assert.ok(encoded.width <= 1440 && encoded.height <= 1440);
   assert.equal(maxEvidenceFiles, 12);
   assert.equal(maxEncodedEvidenceTotalSize, 9 * 1024 * 1024);
+
+  let storedBody: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  const storage = new TaskEvidenceObjectStorage(new ConfigService());
+  Object.assign(storage, {
+    bucket: 'private-test',
+    client: {
+      send: async (command: {
+        constructor: { name: string };
+        input: { Body?: Uint8Array<ArrayBufferLike> };
+      }) => {
+        if (command.constructor.name === 'PutObjectCommand') {
+          storedBody = command.input.Body ?? new Uint8Array();
+          return { ETag: '"test-etag"' };
+        }
+        if (command.constructor.name === 'GetObjectCommand') {
+          return { Body: { transformToByteArray: async () => storedBody } };
+        }
+        return {};
+      }
+    }
+  });
+  const uploaded = await storage.put(encoded.image);
+  assert.match(uploaded.objectKey, /^task-evidence\/\d{4}\/\d{2}\/.+\.jpg$/);
+  assert.equal(uploaded.etag, 'test-etag');
+  assert.equal(uploaded.checksumSha256.length, 64);
+  assert.deepEqual(
+    await storage.get(uploaded.objectKey, uploaded.checksumSha256),
+    Buffer.from(encoded.image)
+  );
+  await assert.rejects(() => storage.get(uploaded.objectKey, '0'.repeat(64)));
+  await storage.delete(uploaded.objectKey);
   console.log('Operational task workflow regression checks passed');
 }
 

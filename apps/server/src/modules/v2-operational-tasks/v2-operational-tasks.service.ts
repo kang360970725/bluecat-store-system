@@ -30,6 +30,7 @@ import {
   maxRawEvidenceTotalSize
 } from './task-evidence';
 import { PrismaService } from '../../database/prisma.service';
+import { TaskEvidenceObjectStorage } from './task-evidence-storage';
 
 const operating = { status: 'OPERATING', deletedAt: null } as const;
 const activePosition = { enabled: true, deletedAt: null } as const;
@@ -190,7 +191,8 @@ export class V2OperationalTasksService
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService
+    private readonly config: ConfigService,
+    private readonly objectStorage: TaskEvidenceObjectStorage
   ) {}
 
   onModuleInit() {
@@ -216,11 +218,31 @@ export class V2OperationalTasksService
 
   private async cleanupEvidenceDrafts() {
     try {
-      await this.prisma.v2OperationalTaskEvidenceDraft.deleteMany({
-        where: { expiresAt: { lte: new Date() } }
+      const drafts = await this.prisma.v2OperationalTaskEvidenceDraft.findMany({
+        where: { expiresAt: { lte: new Date() } },
+        select: { id: true, objectKey: true },
+        orderBy: { expiresAt: 'asc' },
+        take: 100
       });
+      for (const draft of drafts) {
+        const deleted =
+          await this.prisma.v2OperationalTaskEvidenceDraft.deleteMany({
+            where: { id: draft.id, expiresAt: { lte: new Date() } }
+          });
+        if (deleted.count) await this.objectStorage.delete(draft.objectKey);
+      }
     } catch {
       this.logger.warn('任务暂存图片清理失败，稍后重试');
+    }
+  }
+
+  private async deleteStoredEvidence(objectKeys: string[]) {
+    for (const objectKey of objectKeys) {
+      try {
+        await this.objectStorage.delete(objectKey);
+      } catch {
+        this.logger.warn(`任务图片对象清理失败：${objectKey}`);
+      }
     }
   }
 
@@ -1548,9 +1570,18 @@ export class V2OperationalTasksService
     }
     const photo = await this.prisma.v2OperationalTaskEvidence.findFirst({
       where: { id: evidenceId, taskId, ...(manager ? {} : { reopenId: null }) },
-      select: { image: true }
+      select: {
+        image: true,
+        storageProvider: true,
+        objectKey: true,
+        checksumSha256: true
+      }
     });
     if (!photo) throw new ForbiddenException('照片不存在或无权查看');
+    if (photo.storageProvider === 'S3' && photo.objectKey) {
+      return this.objectStorage.get(photo.objectKey, photo.checksumSha256);
+    }
+    if (!photo.image) throw new ForbiddenException('照片不存在或无权查看');
     return photo.image;
   }
 
@@ -1562,50 +1593,82 @@ export class V2OperationalTasksService
   ) {
     if (!photo) throw new BadRequestException('请选择照片');
     const encoded = await encodeTaskEvidence(photo);
-    return this.write(async (tx) => {
-      const { task, employeeId } = await this.employeeTask(tx, accountId, taskId);
-      if (
-        !['PENDING', 'CLAIMED'].includes(task.status) ||
-        (task.status === 'CLAIMED' && task.claimerId !== employeeId) ||
-        task.dueAt.getTime() <= Date.now()
-      )
-        throw new ConflictException('任务已被处理或已截止，请刷新');
-      const items = checklistItems(task.checklist);
-      if (checklistItemId) {
-        const item = items.find((entry) => entry.id === checklistItemId);
-        if (!item || item.mode !== 'PHOTO_REQUIRED')
-          throw new BadRequestException('照片检查项无效');
-      } else if (items.some((item) => item.mode === 'PHOTO_REQUIRED')) {
-        throw new BadRequestException('请选择照片对应的检查项');
-      }
-      await tx.v2OperationalTaskEvidenceDraft.deleteMany({
-        where: {
-          OR: [
-            { expiresAt: { lte: new Date() } },
-            { taskId, employeeId, checklistItemId: checklistItemId ?? null }
-          ]
+    await this.employeeTask(this.prisma, accountId, taskId);
+    const stored = await this.objectStorage.put(encoded.image);
+    try {
+      const result = await this.write(async (tx) => {
+        const { task, employeeId } = await this.employeeTask(
+          tx,
+          accountId,
+          taskId
+        );
+        if (
+          !['PENDING', 'CLAIMED'].includes(task.status) ||
+          (task.status === 'CLAIMED' && task.claimerId !== employeeId) ||
+          task.dueAt.getTime() <= Date.now()
+        )
+          throw new ConflictException('任务已被处理或已截止，请刷新');
+        const items = checklistItems(task.checklist);
+        if (checklistItemId) {
+          const item = items.find((entry) => entry.id === checklistItemId);
+          if (!item || item.mode !== 'PHOTO_REQUIRED')
+            throw new BadRequestException('照片检查项无效');
+        } else if (items.some((item) => item.mode === 'PHOTO_REQUIRED')) {
+          throw new BadRequestException('请选择照片对应的检查项');
         }
+        const replaced = await tx.v2OperationalTaskEvidenceDraft.findMany({
+          where: {
+            taskId,
+            employeeId,
+            checklistItemId: checklistItemId ?? null
+          },
+          select: { id: true, objectKey: true }
+        });
+        if (replaced.length) {
+          await tx.v2OperationalTaskEvidenceDraft.deleteMany({
+            where: { id: { in: replaced.map((draft) => draft.id) } }
+          });
+        }
+        const existing = await tx.v2OperationalTaskEvidenceDraft.aggregate({
+          where: { taskId, employeeId, expiresAt: { gt: new Date() } },
+          _sum: { byteSize: true }
+        });
+        if (
+          (existing._sum.byteSize ?? 0) + encoded.byteSize >
+          maxEncodedEvidenceTotalSize
+        )
+          throw new BadRequestException('暂存照片总量超过 9 MB，请减少照片');
+        const draft = await tx.v2OperationalTaskEvidenceDraft.create({
+          data: {
+            taskId,
+            employeeId,
+            checklistItemId: checklistItemId ?? null,
+            objectKey: stored.objectKey,
+            etag: stored.etag,
+            checksumSha256: stored.checksumSha256,
+            byteSize: encoded.byteSize,
+            width: encoded.width,
+            height: encoded.height,
+            expiresAt: new Date(Date.now() + 24 * 3_600_000)
+          },
+          select: {
+            id: true,
+            checklistItemId: true,
+            byteSize: true,
+            expiresAt: true
+          }
+        });
+        return {
+          draft,
+          replacedKeys: replaced.map((entry) => entry.objectKey)
+        };
       });
-      const existing = await tx.v2OperationalTaskEvidenceDraft.aggregate({
-        where: { taskId, employeeId, expiresAt: { gt: new Date() } },
-        _sum: { byteSize: true }
-      });
-      if ((existing._sum.byteSize ?? 0) + encoded.byteSize > maxEncodedEvidenceTotalSize)
-        throw new BadRequestException('暂存照片总量超过 9 MB，请减少照片');
-      return tx.v2OperationalTaskEvidenceDraft.create({
-        data: {
-          taskId,
-          employeeId,
-          checklistItemId: checklistItemId ?? null,
-          image: encoded.image,
-          byteSize: encoded.byteSize,
-          width: encoded.width,
-          height: encoded.height,
-          expiresAt: new Date(Date.now() + 24 * 3_600_000)
-        },
-        select: { id: true, checklistItemId: true, byteSize: true, expiresAt: true }
-      });
-    });
+      void this.deleteStoredEvidence(result.replacedKeys);
+      return result.draft;
+    } catch (error) {
+      await this.deleteStoredEvidence([stored.objectKey]);
+      throw error;
+    }
   }
 
   async submit(
@@ -1621,8 +1684,13 @@ export class V2OperationalTasksService
   ) {
     const submission = text.trim();
     if (!submission) throw new BadRequestException('请填写完成说明');
-    if (photos.reduce((sum, photo) => sum + photo.length, 0) > maxRawEvidenceTotalSize)
-      throw new BadRequestException('本次上传原图总量超过 24 MB，请压缩或减少照片');
+    if (
+      photos.reduce((sum, photo) => sum + photo.length, 0) >
+      maxRawEvidenceTotalSize
+    )
+      throw new BadRequestException(
+        '本次上传原图总量超过 24 MB，请压缩或减少照片'
+      );
     const before = await this.employeeTask(this.prisma, accountId, id);
     if (
       (before.task.status === 'SUBMITTED' || before.task.status === 'DONE') &&
@@ -1667,7 +1735,9 @@ export class V2OperationalTasksService
     }
     if (
       photoItemIds.length !== photos.length ||
-      photoItemIds.some((itemId) => itemId !== null && typeof itemId !== 'string')
+      photoItemIds.some(
+        (itemId) => itemId !== null && typeof itemId !== 'string'
+      )
     )
       throw new BadRequestException('照片检查项关联无效');
     let evidenceDraftIds: string[] = [];
@@ -1703,13 +1773,16 @@ export class V2OperationalTasksService
     if (!structured && photos.length + drafts.length > maxLegacyEvidenceFiles)
       throw new BadRequestException('旧版任务最多上传 3 张照片');
     const requiredIds = new Set(
-      checklist.filter((item) => item.mode === 'PHOTO_REQUIRED').map((item) => item.id)
+      checklist
+        .filter((item) => item.mode === 'PHOTO_REQUIRED')
+        .map((item) => item.id)
     );
     if (
       structured &&
       (allPhotoItemIds.some((itemId) => !itemId || !requiredIds.has(itemId)) ||
         [...requiredIds].some(
-          (itemId) => allPhotoItemIds.filter((value) => value === itemId).length !== 1
+          (itemId) =>
+            allPhotoItemIds.filter((value) => value === itemId).length !== 1
         ))
     )
       throw new BadRequestException('每个拍照检查项必须且只能上传一张对应照片');
@@ -1727,85 +1800,136 @@ export class V2OperationalTasksService
       maxEncodedEvidenceTotalSize
     )
       throw new BadRequestException('本次照片压缩后总量超过 9 MB，请减少照片');
-    return this.write(async (tx) => {
-      const { employeeId, task } = await this.employeeTask(tx, accountId, id);
-      if (
-        (task.status === 'SUBMITTED' || task.status === 'DONE') &&
-        task.claimerId === employeeId
-      )
-        return { status: task.status };
-      const now = new Date();
-      const finalStatus = task.reviewMode === 'AUTO_COMPLETE' ? 'DONE' : 'SUBMITTED';
-      const result = await tx.v2OperationalTask.updateMany({
-        where: {
-          id,
-          OR: [
-            { status: 'PENDING', claimerId: null },
-            { status: 'CLAIMED', claimerId: employeeId, claimedAt: task.claimedAt }
-          ],
-          dueAt: { gt: now }
-        },
-        data: {
-          status: finalStatus,
-          claimerId: employeeId,
-          claimerName: before.employeeName,
-          claimedAt: task.claimedAt ?? now,
-          submission,
-          submittedAt: now,
-          reviewedBy: finalStatus === 'DONE' ? accountId : null,
-          reviewedAt: finalStatus === 'DONE' ? now : null,
-          checklistConfirmed: checklist.length > 0,
-          checklistIssues
-        }
-      });
-      if (!result.count)
-        throw new ConflictException('任务状态已变更或已截止，请刷新待办');
-      for (const [index, image] of images.entries()) {
-        await tx.v2OperationalTaskEvidence.create({
+    const storedImages = [] as Array<
+      Awaited<ReturnType<TaskEvidenceObjectStorage['put']>>
+    >;
+    try {
+      for (const image of images) {
+        storedImages.push(await this.objectStorage.put(image.image));
+      }
+    } catch (error) {
+      await this.deleteStoredEvidence(
+        storedImages.map((image) => image.objectKey)
+      );
+      throw error;
+    }
+    try {
+      const outcome = await this.write(async (tx) => {
+        const { employeeId, task } = await this.employeeTask(tx, accountId, id);
+        if (
+          (task.status === 'SUBMITTED' || task.status === 'DONE') &&
+          task.claimerId === employeeId
+        )
+          return { status: task.status, accepted: false };
+        const now = new Date();
+        const finalStatus =
+          task.reviewMode === 'AUTO_COMPLETE' ? 'DONE' : 'SUBMITTED';
+        const result = await tx.v2OperationalTask.updateMany({
+          where: {
+            id,
+            OR: [
+              { status: 'PENDING', claimerId: null },
+              {
+                status: 'CLAIMED',
+                claimerId: employeeId,
+                claimedAt: task.claimedAt
+              }
+            ],
+            dueAt: { gt: now }
+          },
           data: {
-            taskId: id,
-            image: image.image,
-            checklistItemId: photoItemIds[index],
-            byteSize: image.byteSize,
-            width: image.width,
-            height: image.height
+            status: finalStatus,
+            claimerId: employeeId,
+            claimerName: before.employeeName,
+            claimedAt: task.claimedAt ?? now,
+            submission,
+            submittedAt: now,
+            reviewedBy: finalStatus === 'DONE' ? accountId : null,
+            reviewedAt: finalStatus === 'DONE' ? now : null,
+            checklistConfirmed: checklist.length > 0,
+            checklistIssues
           }
         });
-      }
-      for (const draft of drafts) {
-        await tx.v2OperationalTaskEvidence.create({
-          data: {
-            taskId: id,
-            image: draft.image,
-            checklistItemId: draft.checklistItemId,
-            byteSize: draft.byteSize,
-            width: draft.width,
-            height: draft.height
-          }
-        });
-      }
-      if (drafts.length) {
-        await tx.v2OperationalTaskEvidenceDraft.deleteMany({
-          where: { id: { in: drafts.map((draft) => draft.id) } }
-        });
-      }
-      const recipients = [
-        ...new Set(savedCc(task.ccRecipients).map((item) => item.accountId))
-      ];
-      await tx.v2OperationalTaskNotification.createMany({
-        data: [
-          { taskId: id, recipientId: task.createdBy, kind: 'SUBMITTED' },
-          ...recipients
-            .filter((recipientId) => recipientId !== task.createdBy)
-            .map((recipientId) => ({
+        if (!result.count)
+          throw new ConflictException('任务状态已变更或已截止，请刷新待办');
+        const currentDrafts = evidenceDraftIds.length
+          ? await tx.v2OperationalTaskEvidenceDraft.findMany({
+              where: {
+                id: { in: evidenceDraftIds },
+                taskId: id,
+                employeeId,
+                expiresAt: { gt: now }
+              }
+            })
+          : [];
+        if (currentDrafts.length !== evidenceDraftIds.length)
+          throw new BadRequestException('暂存照片已失效，请重新选择');
+        for (const [index, image] of images.entries()) {
+          const stored = storedImages[index];
+          await tx.v2OperationalTaskEvidence.create({
+            data: {
               taskId: id,
-              recipientId,
-              kind: 'CC' as const
-            }))
-        ]
+              storageProvider: 'S3',
+              objectKey: stored.objectKey,
+              etag: stored.etag,
+              checksumSha256: stored.checksumSha256,
+              checklistItemId: photoItemIds[index],
+              byteSize: image.byteSize,
+              width: image.width,
+              height: image.height
+            }
+          });
+        }
+        for (const draft of currentDrafts) {
+          await tx.v2OperationalTaskEvidence.create({
+            data: {
+              taskId: id,
+              storageProvider: 'S3',
+              objectKey: draft.objectKey,
+              etag: draft.etag,
+              checksumSha256: draft.checksumSha256,
+              contentType: draft.contentType,
+              checklistItemId: draft.checklistItemId,
+              byteSize: draft.byteSize,
+              width: draft.width,
+              height: draft.height
+            }
+          });
+        }
+        if (currentDrafts.length) {
+          await tx.v2OperationalTaskEvidenceDraft.deleteMany({
+            where: { id: { in: currentDrafts.map((draft) => draft.id) } }
+          });
+        }
+        const recipients = [
+          ...new Set(savedCc(task.ccRecipients).map((item) => item.accountId))
+        ];
+        await tx.v2OperationalTaskNotification.createMany({
+          data: [
+            { taskId: id, recipientId: task.createdBy, kind: 'SUBMITTED' },
+            ...recipients
+              .filter((recipientId) => recipientId !== task.createdBy)
+              .map((recipientId) => ({
+                taskId: id,
+                recipientId,
+                kind: 'CC' as const
+              }))
+          ]
+        });
+        return { status: finalStatus, accepted: true };
       });
-      return { status: finalStatus };
-    });
+      if (!outcome.accepted) {
+        await this.deleteStoredEvidence(
+          storedImages.map((image) => image.objectKey)
+        );
+      }
+      return { status: outcome.status };
+    } catch (error) {
+      await this.deleteStoredEvidence(
+        storedImages.map((image) => image.objectKey)
+      );
+      throw error;
+    }
   }
 
   async complete(accountId: string, id: string, submittedAt: string) {
