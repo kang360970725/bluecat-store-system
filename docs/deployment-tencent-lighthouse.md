@@ -49,16 +49,13 @@ sudo bash scripts/bootstrap-ubuntu.sh
 /opt/bluecat-store-system
 ```
 
-如果使用 Git：
+当前生产部署不依赖服务器拉取 GitHub。腾讯云服务器访问 GitHub 不稳定，标准方式固定为本地打包上传。
+
+首次部署时由本地脚本上传代码包到服务器并解压到该目录：
 
 ```bash
-sudo mkdir -p /opt
-sudo chown -R "$USER":"$USER" /opt
-git clone <repo-url> /opt/bluecat-store-system
-cd /opt/bluecat-store-system
+bash scripts/deploy-upload.sh
 ```
-
-如果暂时不使用 Git，可以本地打包后上传到该目录。
 
 ### 3. 创建生产环境配置
 
@@ -127,15 +124,21 @@ pm2 restart bluecat-store-server
 
 ## 后续一键部署
 
-进入项目目录后执行：
+后续部署固定在本地项目目录执行：
 
 ```bash
-cd /opt/bluecat-store-system
-git pull
-pnpm deploy:prod
+bash scripts/deploy-upload.sh
 ```
 
-`pnpm deploy:prod` 会执行：
+该脚本会执行：
+
+1. 本地打包当前项目，排除 `.git`、`node_modules`、`.env`、构建产物和编辑器缓存
+2. 上传到 `ubuntu@49.235.145.204:/tmp/bluecat-store-system-upload.tar`
+3. 服务器保留 `/opt/bluecat-store-system/.env` 和 `node_modules`
+4. 覆盖服务器代码
+5. 在服务器执行 `pnpm deploy:prod`
+
+服务器端 `pnpm deploy:prod` 会执行：
 
 1. `pnpm install --frozen-lockfile`
 2. `pnpm prisma:generate`
@@ -143,6 +146,62 @@ pnpm deploy:prod
 4. `pnpm build`
 5. `pm2 startOrReload ecosystem.config.cjs --env production`
 6. `pm2 save`
+
+默认连接信息已经写入脚本：
+
+```bash
+SSH_KEY=/Users/allen/Downloads/bluecat_store.pem
+SSH_USER=ubuntu
+SSH_HOST=49.235.145.204
+REMOTE_DIR=/opt/bluecat-store-system
+```
+
+如需临时覆盖：
+
+```bash
+SSH_KEY=/path/to/key.pem SSH_HOST=1.2.3.4 bash scripts/deploy-upload.sh
+```
+
+## 生产数据库同步到本地
+
+生产 MySQL 不对公网开放。需要本地通过 SSH 登录服务器，在服务器本机执行 `mysqldump` 后导入本地 MySQL。
+
+本地项目目录执行：
+
+```bash
+bash scripts/sync-prod-db-to-local.sh
+```
+
+脚本会执行：
+
+1. 通过 SSH 连接 `ubuntu@49.235.145.204`
+2. 读取服务器 `/opt/bluecat-store-system/.env`
+3. 在服务器本机导出生产库 `store_system_db`
+4. 将 SQL dump 保存到本地 `database-backups/`
+5. 如本地 MySQL 可连接，先备份本地库，再重建并导入生产数据
+
+如果本地 MySQL 暂未启动，只需要先拉取生产 dump：
+
+```bash
+bash scripts/sync-prod-db-to-local.sh --dump-only
+```
+
+本地 MySQL 启动后，再执行不带参数的同步命令完成导入。
+
+默认连接信息：
+
+```bash
+SSH_KEY=/Users/allen/Downloads/bluecat_store.pem
+SSH_USER=ubuntu
+SSH_HOST=49.235.145.204
+REMOTE_DIR=/opt/bluecat-store-system
+```
+
+如需临时覆盖：
+
+```bash
+SSH_KEY=/path/to/key.pem SSH_HOST=1.2.3.4 bash scripts/sync-prod-db-to-local.sh
+```
 
 ## 常用排查命令
 

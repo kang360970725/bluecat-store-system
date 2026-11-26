@@ -33,6 +33,12 @@ export class PermissionGuard implements CanActivate {
       return true;
     }
 
+    const scopedRequest = context.switchToHttp().getRequest<{ params?: Record<string, string>; query?: Record<string, string>; body?: Record<string, unknown> }>();
+    const requestedStoreId = scopedRequest.params?.storeId || scopedRequest.query?.storeId || (typeof scopedRequest.body?.storeId === 'string' ? scopedRequest.body.storeId : undefined);
+    if (requestedStoreId && !user.accessibleStoreIds.includes(requestedStoreId)) {
+      throw new ForbiddenException('无权访问该门店数据');
+    }
+
     const ownedPermissions = new Set(user.permissions);
     const allowed = requiredPermissions.every((permission) =>
       ownedPermissions.has(permission)

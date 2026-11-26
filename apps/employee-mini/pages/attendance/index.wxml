@@ -1,0 +1,36 @@
+<view class="page">
+  <view class="title">考勤打卡</view>
+  <button size="mini" disabled="{{busy}}" bindtap="refresh">刷新班次</button>
+  <button size="mini" disabled="{{busy}}" bindtap="openBinding">绑定员工账号</button>
+  <picker mode="date" value="{{workDate}}" bindchange="chooseDate" disabled="{{busy}}">
+    <view>{{workDate || '选择排班日期'}}</view>
+  </picker>
+  <button wx:if="{{workDate}}" size="mini" disabled="{{busy}}" bindtap="resetDate">查看近期班次</button>
+  <form wx:if="{{correction}}" bindsubmit="submitCorrection" class="card">
+    <view>{{correction.kind === 'IN' ? '上班' : '下班'}}补卡（北京时间）</view>
+    <picker mode="date" value="{{correction.date}}" bindchange="setCorrectionDate"><view>{{correction.date}}</view></picker>
+    <picker mode="time" value="{{correction.time}}" bindchange="setCorrectionTime"><view>{{correction.time || '选择应补时间'}}</view></picker>
+    <input name="reason" maxlength="500" placeholder="补卡原因" />
+    <button form-type="submit" disabled="{{busy}}">提交申请</button>
+    <button type="default" bindtap="closeCorrection" disabled="{{busy}}">取消</button>
+  </form>
+  <form wx:if="{{showBind}}" bindsubmit="bind" class="card">
+    <input name="username" placeholder="运营系统员工账号" />
+    <input name="password" password placeholder="运营系统密码" />
+    <button form-type="submit" disabled="{{busy}}">确认绑定</button>
+  </form>
+  <view wx:if="{{!assignments.length}}" class="card">暂无可显示的班次</view>
+  <view wx:for="{{assignments}}" wx:key="id" class="card">
+    <view>{{item.period.store.name}} · {{item.shift.name}}</view>
+    <view>{{item.workDate}} {{item.shift.startsAt}} 至 {{item.shift.spansNextDay ? '次日 ' : ''}}{{item.shift.endsAt}}</view>
+    <view wx:for="{{item.states}}" wx:for-item="state" wx:key="kind">
+      <button data-id="{{item.id}}" data-kind="{{state.kind}}" disabled="{{busy || state.punched}}" bindtap="punch">
+        {{state.punched ? state.label + state.note : 'Wi-Fi ' + state.label + '打卡'}}
+      </button>
+      <button wx:if="{{!state.punched}}" size="mini" disabled="{{busy || state.pending}}" data-id="{{item.id}}" data-kind="{{state.kind}}" data-date="{{item.workDate}}" bindtap="openCorrection">
+        {{state.pending ? '补卡待审核' : '申请补卡'}}
+      </button>
+      <view wx:if="{{!state.punched && state.note}}">{{state.note}}</view>
+    </view>
+  </view>
+</view>

@@ -53,11 +53,6 @@
           </n-button>
         </n-form>
 
-        <div class="login-meta">
-          <span>默认账号：admin</span>
-          <span>密码：admin123</span>
-        </div>
-
         <div class="login-footer">
           <div class="footer-status">
             <span></span>
@@ -83,8 +78,8 @@ const message = useMessage();
 const auth = useAuthStore();
 const loading = ref(false);
 const form = reactive({
-  username: 'admin',
-  password: 'admin123'
+  username: '',
+  password: ''
 });
 
 const signalItems = [
@@ -98,7 +93,13 @@ async function submit() {
   try {
     const session = await login(form);
     auth.setSession(session);
-    router.push(typeof route.query.redirect === 'string' ? route.query.redirect : '/');
+    router.push(
+      session.user.mustChangePassword
+        ? '/change-password'
+        : typeof route.query.redirect === 'string'
+          ? route.query.redirect
+          : '/'
+    );
   } catch (error) {
     message.error(error instanceof Error ? error.message : '登录失败');
   } finally {
@@ -115,8 +116,16 @@ async function submit() {
   padding: 28px;
   overflow: hidden;
   background:
-    radial-gradient(circle at 16% 18%, rgba(38, 166, 154, 0.18), transparent 28%),
-    radial-gradient(circle at 82% 14%, rgba(22, 119, 255, 0.16), transparent 30%),
+    radial-gradient(
+      circle at 16% 18%,
+      rgba(38, 166, 154, 0.18),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 82% 14%,
+      rgba(22, 119, 255, 0.16),
+      transparent 30%
+    ),
     linear-gradient(135deg, #eef6ff 0%, #f7fafc 46%, #f1fbf8 100%);
 }
 
@@ -255,7 +264,11 @@ async function submit() {
   flex-direction: column;
   justify-content: center;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 250, 252, 0.92)),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.94),
+      rgba(248, 250, 252, 0.92)
+    ),
     #fff;
 }
 

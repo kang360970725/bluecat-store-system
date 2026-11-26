@@ -4,10 +4,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthModule } from './modules/auth/auth.module';
 import { DatabaseModule } from './database/database.module';
 import { IamModule } from './modules/iam/iam.module';
-import { OrgModule } from './modules/org/org.module';
-import { PerformanceModule } from './modules/performance/performance.module';
-import { ScoringModule } from './modules/scoring/scoring.module';
-import { StoreModule } from './modules/store/store.module';
+import { V2MasterDataModule } from './modules/v2-master-data/v2-master-data.module';
+import { V2OperationsModule } from './modules/v2-operations/v2-operations.module';
+import { V2RechargeContestModule } from './modules/v2-recharge-contest/v2-recharge-contest.module';
+import { V2FinanceModule } from './modules/v2-finance/v2-finance.module';
+import { V2AttendanceModule } from './modules/v2-attendance/v2-attendance.module';
+import { V2OperationalTasksModule } from './modules/v2-operational-tasks/v2-operational-tasks.module';
 import appConfig from './common/config/app.config';
 import databaseConfig from './common/config/database.config';
 import jwtConfig from './common/config/jwt.config';
@@ -32,10 +34,12 @@ import redisConfig from './common/config/redis.config';
     DatabaseModule,
     AuthModule,
     IamModule,
-    OrgModule,
-    StoreModule,
-    PerformanceModule,
-    ScoringModule
+    V2MasterDataModule,
+    V2OperationsModule,
+    V2RechargeContestModule,
+    V2FinanceModule,
+    V2AttendanceModule,
+    V2OperationalTasksModule
   ]
 })
 export class AppModule {}

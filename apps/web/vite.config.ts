@@ -22,6 +22,15 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true
         }
       }
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'vendor-vue': ['vue', 'vue-router', 'pinia', '@vueuse/motion']
+          }
+        }
+      }
     }
   };
 });

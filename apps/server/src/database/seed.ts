@@ -16,6 +16,22 @@ async function main() {
     }
   });
 
+  await prisma.v2Organization.upsert({
+    where: { code: 'HQ' },
+    update: {
+      type: 'HEADQUARTERS',
+      name: '蓝猫总部',
+      enabled: true,
+      deletedAt: null
+    },
+    create: {
+      type: 'HEADQUARTERS',
+      code: 'HQ',
+      name: '蓝猫总部',
+      enabled: true
+    }
+  });
+
   const store = await prisma.store.upsert({
     where: { code: 'STORE-001' },
     update: {
@@ -123,44 +139,291 @@ async function main() {
       { code: 'org:create', name: '创建组织', type: 'api', path: '/orgs' },
       { code: 'org:update', name: '更新组织', type: 'api', path: '/orgs/:id' },
       { code: 'org:delete', name: '删除组织', type: 'api', path: '/orgs/:id' },
-      { code: 'store:view', name: '查看门店模块', type: 'api', path: '/stores' },
+      {
+        code: 'store:view',
+        name: '查看门店模块',
+        type: 'api',
+        path: '/stores'
+      },
       { code: 'store:create', name: '创建门店', type: 'api', path: '/stores' },
-      { code: 'store:update', name: '更新门店', type: 'api', path: '/stores/:id' },
-      { code: 'store:delete', name: '删除门店', type: 'api', path: '/stores/:id' },
-      { code: 'employee:view', name: '查看员工', type: 'api', path: '/stores/employees' },
-      { code: 'employee:create', name: '创建员工', type: 'api', path: '/stores/employees' },
-      { code: 'employee:update', name: '更新员工', type: 'api', path: '/stores/employees/:id' },
-      { code: 'employee:delete', name: '删除员工', type: 'api', path: '/stores/employees/:id' },
-      { code: 'store-area:view', name: '查看门店区域', type: 'api', path: '/stores/areas' },
-      { code: 'store-area:create', name: '创建门店区域', type: 'api', path: '/stores/areas' },
-      { code: 'store-area:update', name: '更新门店区域', type: 'api', path: '/stores/areas/:id' },
-      { code: 'store-area:delete', name: '删除门店区域', type: 'api', path: '/stores/areas/:id' },
-      { code: 'store-area-price:update', name: '更新区域价格', type: 'api', path: '/stores/areas/:id/prices' },
-      { code: 'performance:view', name: '查看门店业绩指标', type: 'api', path: '/performances/monthly' },
-      { code: 'performance:update', name: '更新门店业绩指标', type: 'api', path: '/performances/monthly/:storeId' },
-      { code: 'performance-split:view', name: '查看业绩拆分', type: 'api', path: '/performances/splits' },
-      { code: 'performance-split:update', name: '更新业绩拆分', type: 'api', path: '/performances/splits/:id' },
-      { code: 'schedule:view', name: '查看门店排班', type: 'api', path: '/performances/schedules' },
-      { code: 'schedule:update', name: '更新门店排班', type: 'api', path: '/performances/schedules' },
-      { code: 'scoring:view', name: '查看门店评分', type: 'api', path: '/scoring/monthly' },
-      { code: 'scoring:update', name: '录入门店评分', type: 'api', path: '/scoring/entries' },
-      { code: 'scoring:config', name: '配置计分项目', type: 'api', path: '/scoring/items' },
-      { code: 'permission:view', name: '查看权限', type: 'api', path: '/iam/permissions' },
-      { code: 'permission:create', name: '创建权限', type: 'api', path: '/iam/permissions' },
-      { code: 'permission:update', name: '更新权限', type: 'api', path: '/iam/permissions/:id' },
-      { code: 'permission:delete', name: '删除权限', type: 'api', path: '/iam/permissions/:id' },
+      {
+        code: 'store:update',
+        name: '更新门店',
+        type: 'api',
+        path: '/stores/:id'
+      },
+      {
+        code: 'store:delete',
+        name: '删除门店',
+        type: 'api',
+        path: '/stores/:id'
+      },
+      {
+        code: 'employee:view',
+        name: '查看员工',
+        type: 'api',
+        path: '/stores/employees'
+      },
+      {
+        code: 'employee:create',
+        name: '创建员工',
+        type: 'api',
+        path: '/stores/employees'
+      },
+      {
+        code: 'employee:update',
+        name: '更新员工',
+        type: 'api',
+        path: '/stores/employees/:id'
+      },
+      {
+        code: 'employee:delete',
+        name: '删除员工',
+        type: 'api',
+        path: '/stores/employees/:id'
+      },
+      {
+        code: 'store-area:view',
+        name: '查看门店区域',
+        type: 'api',
+        path: '/stores/areas'
+      },
+      {
+        code: 'store-area:create',
+        name: '创建门店区域',
+        type: 'api',
+        path: '/stores/areas'
+      },
+      {
+        code: 'store-area:update',
+        name: '更新门店区域',
+        type: 'api',
+        path: '/stores/areas/:id'
+      },
+      {
+        code: 'store-area:delete',
+        name: '删除门店区域',
+        type: 'api',
+        path: '/stores/areas/:id'
+      },
+      {
+        code: 'store-area-price:update',
+        name: '更新区域价格',
+        type: 'api',
+        path: '/stores/areas/:id/prices'
+      },
+      {
+        code: 'performance:view',
+        name: '查看门店业绩指标',
+        type: 'api',
+        path: '/performances/monthly'
+      },
+      {
+        code: 'performance:update',
+        name: '更新门店业绩指标',
+        type: 'api',
+        path: '/performances/monthly/:storeId'
+      },
+      {
+        code: 'performance-split:view',
+        name: '查看业绩拆分',
+        type: 'api',
+        path: '/performances/splits'
+      },
+      {
+        code: 'performance-split:update',
+        name: '更新业绩拆分',
+        type: 'api',
+        path: '/performances/splits/:id'
+      },
+      {
+        code: 'schedule:view',
+        name: '查看门店排班',
+        type: 'api',
+        path: '/performances/schedules'
+      },
+      {
+        code: 'schedule:update',
+        name: '更新门店排班',
+        type: 'api',
+        path: '/performances/schedules'
+      },
+      {
+        code: 'scoring:view',
+        name: '查看门店评分',
+        type: 'api',
+        path: '/scoring/monthly'
+      },
+      {
+        code: 'scoring:update',
+        name: '录入门店评分',
+        type: 'api',
+        path: '/scoring/entries'
+      },
+      {
+        code: 'scoring:config',
+        name: '配置计分项目',
+        type: 'api',
+        path: '/scoring/items'
+      },
+      {
+        code: 'permission:view',
+        name: '查看权限',
+        type: 'api',
+        path: '/iam/permissions'
+      },
+      {
+        code: 'permission:create',
+        name: '创建权限',
+        type: 'api',
+        path: '/iam/permissions'
+      },
+      {
+        code: 'permission:update',
+        name: '更新权限',
+        type: 'api',
+        path: '/iam/permissions/:id'
+      },
+      {
+        code: 'permission:delete',
+        name: '删除权限',
+        type: 'api',
+        path: '/iam/permissions/:id'
+      },
       { code: 'role:view', name: '查看角色', type: 'api', path: '/iam/roles' },
-      { code: 'role:create', name: '创建角色', type: 'api', path: '/iam/roles' },
-      { code: 'role:update', name: '更新角色', type: 'api', path: '/iam/roles/:id' },
-      { code: 'role:delete', name: '删除角色', type: 'api', path: '/iam/roles/:id' },
-      { code: 'position:view', name: '查看岗位', type: 'api', path: '/iam/positions' },
-      { code: 'position:create', name: '创建岗位', type: 'api', path: '/iam/positions' },
-      { code: 'position:update', name: '更新岗位', type: 'api', path: '/iam/positions/:id' },
-      { code: 'position:delete', name: '删除岗位', type: 'api', path: '/iam/positions/:id' },
+      {
+        code: 'role:create',
+        name: '创建角色',
+        type: 'api',
+        path: '/iam/roles'
+      },
+      {
+        code: 'role:update',
+        name: '更新角色',
+        type: 'api',
+        path: '/iam/roles/:id'
+      },
+      {
+        code: 'role:delete',
+        name: '删除角色',
+        type: 'api',
+        path: '/iam/roles/:id'
+      },
+      {
+        code: 'position:view',
+        name: '查看岗位',
+        type: 'api',
+        path: '/iam/positions'
+      },
+      {
+        code: 'position:create',
+        name: '创建岗位',
+        type: 'api',
+        path: '/iam/positions'
+      },
+      {
+        code: 'position:update',
+        name: '更新岗位',
+        type: 'api',
+        path: '/iam/positions/:id'
+      },
+      {
+        code: 'position:delete',
+        name: '删除岗位',
+        type: 'api',
+        path: '/iam/positions/:id'
+      },
       { code: 'user:view', name: '查看用户', type: 'api', path: '/iam/users' },
-      { code: 'user:create', name: '创建用户', type: 'api', path: '/iam/users' },
-      { code: 'user:update', name: '更新用户', type: 'api', path: '/iam/users/:id' },
-      { code: 'user:delete', name: '删除用户', type: 'api', path: '/iam/users/:id' }
+      {
+        code: 'user:create',
+        name: '创建用户',
+        type: 'api',
+        path: '/iam/users'
+      },
+      {
+        code: 'user:update',
+        name: '更新用户',
+        type: 'api',
+        path: '/iam/users/:id'
+      },
+      {
+        code: 'user:delete',
+        name: '删除用户',
+        type: 'api',
+        path: '/iam/users/:id'
+      },
+      {
+        code: 'finance.payroll:view_summary',
+        name: '查看工资汇总',
+        type: 'api',
+        path: '/v2/finance/payroll-batches'
+      },
+      {
+        code: 'finance.payroll:view_sensitive',
+        name: '查看个人工资明细',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id'
+      },
+      {
+        code: 'finance.payroll:view_all_stores',
+        name: '查看全部门店工资',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id'
+      },
+      {
+        code: 'finance.payroll:manage',
+        name: '管理工资批次',
+        type: 'api',
+        path: '/v2/finance/payroll-batches'
+      },
+      {
+        code: 'finance.payroll:edit_inputs',
+        name: '编辑工资基础数据',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/store-profit'
+      },
+      {
+        code: 'finance.payroll:calculate',
+        name: '执行工资计算与退回',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/transition'
+      },
+      {
+        code: 'finance.payroll:review',
+        name: '复核工资',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/transition'
+      },
+      {
+        code: 'finance.payroll:approve',
+        name: '审批工资',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/transition'
+      },
+      {
+        code: 'finance.payroll:lock',
+        name: '锁定工资',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/transition'
+      },
+      {
+        code: 'finance.payroll:pay',
+        name: '确认工资发放',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/transition'
+      },
+      {
+        code: 'finance.payroll:export',
+        name: '导出工资数据',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/export'
+      },
+      {
+        code: 'finance.payroll:audit',
+        name: '查看工资审计日志',
+        type: 'api',
+        path: '/v2/finance/payroll-batches/:id/audit'
+      }
     ].map((permission) =>
       prisma.permission.upsert({
         where: { code: permission.code },
@@ -282,58 +545,262 @@ async function main() {
   });
 
   const scoreItems = [
-    ['manager', '店经理评比', '日常扣分', 'manager_daily_deduct', 20, -100, '第一部分：日常得分，当前公式后续补充'],
-    ['manager', '店经理评比', '日常加分', 'manager_daily_bonus', 20, 0, '第一部分：日常得分，当前公式后续补充'],
-    ['manager', '店经理评比', '业绩达成', 'manager_performance_completion', 40, 0, '第二部分：门店业绩完成分'],
-    ['manager', '店经理评比', '稽核得分', 'manager_audit_score', 20, 0, '第三部分：门店稽核得分'],
-    ['manager', '店经理评比', '高级会员得分', 'manager_vip_score', 10, 0, '第四部分：高级会员得分'],
-    ['manager', '店经理评比', '投诉扣分', 'manager_complaint_deduct', 10, -100, '第五部分：投诉扣分，录入扣分值或折算后得分'],
-    ['store', '优秀门店', '任务达成率', 'store_task_completion', 50, 0, '门店任务达成率，公式后续补充'],
-    ['store', '优秀门店', '稽核得分', 'store_audit_score', 20, 0, '门店稽核得分'],
-    ['store', '优秀门店', '调查问卷', 'store_questionnaire_score', 15, 0, '调查问卷得分'],
-    ['store', '优秀门店', '神访得分', 'store_mystery_visit_score', 15, 0, '神访第一次/第二次平均分'],
-    ['store', '优秀门店', '其他得分', 'store_other_score', 10, -10, '其他得分区间 -10 至 10'],
-    ['hygiene', '卫生标兵', '稽核', 'hygiene_audit', 100, 0, '卫生标兵：稽核维度'],
-    ['hygiene', '卫生标兵', '神访', 'hygiene_mystery_visit', 100, 0, '卫生标兵：神访维度'],
-    ['hygiene', '卫生标兵', '门店投诉', 'hygiene_complaint', 0, -100, '卫生标兵：投诉扣分'],
-    ['service', '金牌客服', '玩家调查', 'service_player_survey', 30, 0, '金牌客服：玩家调查，上限 30'],
-    ['service', '金牌客服', '现场督导', 'service_supervision', 40, 0, '金牌客服：现场督导，上限 40'],
-    ['service', '金牌客服', '企微目标', 'service_wecom_target', 30, 0, '金牌客服：企微目标，上限 30'],
-    ['service', '金牌客服', '高等级会员', 'service_vip_member', null, 0, '金牌客服：高等级会员，公式后续补充'],
-    ['sales', '王牌销冠', '达成率', 'sales_completion_rate', null, 0, '王牌销冠：达成率'],
-    ['sales', '王牌销冠', '加权得分', 'sales_weighted_score', null, 0, '王牌销冠：加权得分'],
-    ['audit', '稽核冠军', '稽核分', 'audit_champion_score', 100, 0, '稽核冠军得分'],
-    ['assault', '突击精英', '第一次神访', 'assault_first_visit', 100, 0, '突击精英：第一次神访'],
-    ['assault', '突击精英', '第二次神访', 'assault_second_visit', 100, 0, '突击精英：第二次神访'],
-    ['assault', '突击精英', '平均分', 'assault_average_score', 100, 0, '突击精英：平均分']
+    [
+      'manager',
+      '店经理评比',
+      '日常扣分',
+      'manager_daily_deduct',
+      20,
+      -100,
+      '第一部分：日常得分，当前公式后续补充'
+    ],
+    [
+      'manager',
+      '店经理评比',
+      '日常加分',
+      'manager_daily_bonus',
+      20,
+      0,
+      '第一部分：日常得分，当前公式后续补充'
+    ],
+    [
+      'manager',
+      '店经理评比',
+      '业绩达成',
+      'manager_performance_completion',
+      40,
+      0,
+      '第二部分：门店业绩完成分'
+    ],
+    [
+      'manager',
+      '店经理评比',
+      '稽核得分',
+      'manager_audit_score',
+      20,
+      0,
+      '第三部分：门店稽核得分'
+    ],
+    [
+      'manager',
+      '店经理评比',
+      '高级会员得分',
+      'manager_vip_score',
+      10,
+      0,
+      '第四部分：高级会员得分'
+    ],
+    [
+      'manager',
+      '店经理评比',
+      '投诉扣分',
+      'manager_complaint_deduct',
+      10,
+      -100,
+      '第五部分：投诉扣分，录入扣分值或折算后得分'
+    ],
+    [
+      'store',
+      '优秀门店',
+      '任务达成率',
+      'store_task_completion',
+      50,
+      0,
+      '门店任务达成率，公式后续补充'
+    ],
+    [
+      'store',
+      '优秀门店',
+      '稽核得分',
+      'store_audit_score',
+      20,
+      0,
+      '门店稽核得分'
+    ],
+    [
+      'store',
+      '优秀门店',
+      '调查问卷',
+      'store_questionnaire_score',
+      15,
+      0,
+      '调查问卷得分'
+    ],
+    [
+      'store',
+      '优秀门店',
+      '神访得分',
+      'store_mystery_visit_score',
+      15,
+      0,
+      '神访第一次/第二次平均分'
+    ],
+    [
+      'store',
+      '优秀门店',
+      '其他得分',
+      'store_other_score',
+      10,
+      -10,
+      '其他得分区间 -10 至 10'
+    ],
+    [
+      'hygiene',
+      '卫生标兵',
+      '稽核',
+      'hygiene_audit',
+      100,
+      0,
+      '卫生标兵：稽核维度'
+    ],
+    [
+      'hygiene',
+      '卫生标兵',
+      '神访',
+      'hygiene_mystery_visit',
+      100,
+      0,
+      '卫生标兵：神访维度'
+    ],
+    [
+      'hygiene',
+      '卫生标兵',
+      '门店投诉',
+      'hygiene_complaint',
+      0,
+      -100,
+      '卫生标兵：投诉扣分'
+    ],
+    [
+      'service',
+      '金牌客服',
+      '玩家调查',
+      'service_player_survey',
+      30,
+      0,
+      '金牌客服：玩家调查，上限 30'
+    ],
+    [
+      'service',
+      '金牌客服',
+      '现场督导',
+      'service_supervision',
+      40,
+      0,
+      '金牌客服：现场督导，上限 40'
+    ],
+    [
+      'service',
+      '金牌客服',
+      '企微目标',
+      'service_wecom_target',
+      30,
+      0,
+      '金牌客服：企微目标，上限 30'
+    ],
+    [
+      'service',
+      '金牌客服',
+      '高等级会员',
+      'service_vip_member',
+      null,
+      0,
+      '金牌客服：高等级会员，公式后续补充'
+    ],
+    [
+      'sales',
+      '王牌销冠',
+      '达成率',
+      'sales_completion_rate',
+      null,
+      0,
+      '王牌销冠：达成率'
+    ],
+    [
+      'sales',
+      '王牌销冠',
+      '加权得分',
+      'sales_weighted_score',
+      null,
+      0,
+      '王牌销冠：加权得分'
+    ],
+    [
+      'audit',
+      '稽核冠军',
+      '稽核分',
+      'audit_champion_score',
+      100,
+      0,
+      '稽核冠军得分'
+    ],
+    [
+      'assault',
+      '突击精英',
+      '第一次神访',
+      'assault_first_visit',
+      100,
+      0,
+      '突击精英：第一次神访'
+    ],
+    [
+      'assault',
+      '突击精英',
+      '第二次神访',
+      'assault_second_visit',
+      100,
+      0,
+      '突击精英：第二次神访'
+    ],
+    [
+      'assault',
+      '突击精英',
+      '平均分',
+      'assault_average_score',
+      100,
+      0,
+      '突击精英：平均分'
+    ]
   ] as const;
 
   await Promise.all(
-    scoreItems.map(([categoryCode, categoryName, name, code, maxScore, minScore, formulaNote], index) =>
-      prisma.scoreItem.upsert({
-        where: { code },
-        update: {
-          categoryCode,
-          categoryName,
-          name,
-          maxScore,
-          minScore,
-          formulaNote,
-          sort: index + 1,
-          enabled: true,
-          deletedAt: null
-        },
-        create: {
+    scoreItems.map(
+      (
+        [
           categoryCode,
           categoryName,
           name,
           code,
           maxScore,
           minScore,
-          formulaNote,
-          sort: index + 1
-        }
-      })
+          formulaNote
+        ],
+        index
+      ) =>
+        prisma.scoreItem.upsert({
+          where: { code },
+          update: {
+            categoryCode,
+            categoryName,
+            name,
+            maxScore,
+            minScore,
+            formulaNote,
+            sort: index + 1,
+            enabled: true,
+            deletedAt: null
+          },
+          create: {
+            categoryCode,
+            categoryName,
+            name,
+            code,
+            maxScore,
+            minScore,
+            formulaNote,
+            sort: index + 1
+          }
+        })
     )
   );
 
@@ -591,7 +1058,7 @@ async function main() {
     }
   });
 
-  console.log('Seed data ready: admin / admin123, manager / manager123');
+  console.log('Seed data ready');
 }
 
 main()
