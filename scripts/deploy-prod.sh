@@ -16,7 +16,7 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 echo "Installing dependencies..."
-pnpm install --frozen-lockfile --prod=false
+CI=true pnpm install --frozen-lockfile --prod=false
 
 echo "Generating Prisma Client..."
 pnpm prisma:generate
