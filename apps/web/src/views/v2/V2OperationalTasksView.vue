@@ -71,7 +71,11 @@ interface Task {
     reason: string;
     submittedAt: string;
   } | null;
-  evidence: Array<{ id: string; checklistItemId: string | null; byteSize: number }>;
+  evidence: Array<{
+    id: string;
+    checklistItemId: string | null;
+    byteSize: number;
+  }>;
   extensions?: ExtensionHistory[];
   submittedAt: string | null;
   claimedAt: string | null;
@@ -193,6 +197,10 @@ interface TaskInbox {
 }
 const inbox = ref<TaskInbox>({ unread: 0, rows: [] });
 const inboxOpen = ref(false);
+type WorkspaceSection =
+  'mine' | 'dispatch' | 'manage' | 'automation' | 'settings';
+const activeSection = ref<WorkspaceSection>('mine');
+const sectionInitialized = ref(false);
 const inboxLabels = {
   SUBMITTED: '任务已提交',
   CC: '任务结果抄送',
@@ -276,7 +284,8 @@ const normalizedChecklist = (task?: Task): ChecklistItem[] =>
 const structuredChecklist = (task?: Task) =>
   Boolean(task?.checklist?.some((item) => typeof item === 'object'));
 const checklistLabel = (task: Task, id: string) =>
-  normalizedChecklist(task).find((item) => item.id === id)?.label ?? `检查项 ${id}`;
+  normalizedChecklist(task).find((item) => item.id === id)?.label ??
+  `检查项 ${id}`;
 const addChecklistItem = () => {
   if (checklistDrafts.value.length >= 20) return;
   checklistDrafts.value.push({
@@ -286,7 +295,9 @@ const addChecklistItem = () => {
   });
 };
 const removeChecklistItem = (id: string) => {
-  checklistDrafts.value = checklistDrafts.value.filter((item) => item.id !== id);
+  checklistDrafts.value = checklistDrafts.value.filter(
+    (item) => item.id !== id
+  );
 };
 const options = computed(() =>
   visibleTargets.value.map((target) => ({
@@ -338,8 +349,7 @@ async function loadCcOptions(storeIds: string) {
       available.has(username)
     );
   } catch (error) {
-    if (sequence === ccLoadSequence)
-      ccError.value = (error as Error).message;
+    if (sequence === ccLoadSequence) ccError.value = (error as Error).message;
   } finally {
     if (sequence === ccLoadSequence) ccLoading.value = false;
   }
@@ -398,6 +408,12 @@ async function load(
   canManage.value = data.canManage;
   canReport.value = data.canReport;
   canReviewExtensions.value = data.canReviewExtensions;
+  if (!sectionInitialized.value) {
+    activeSection.value = data.canManage ? 'manage' : 'mine';
+    sectionInitialized.value = true;
+  } else if (!data.canManage && activeSection.value !== 'mine') {
+    activeSection.value = 'mine';
+  }
   managementStores.value = data.managementStores;
   managementPage.value = page;
   hasNextPage.value = data.hasNext;
@@ -407,12 +423,13 @@ async function load(
 
   if (refreshTargets || !data.canManage) {
     if (data.canManage) {
-      const [nextTargets, nextSchedules, nextGroups, nextStorage] = await Promise.all([
-        request<Target[]>(`${base}/targets`),
-        request<Schedule[]>(`${base}/schedules`),
-        request<ManagementGroupStore[]>(`${base}/management-groups`),
-        request<EvidenceStorage>(`${base}/evidence-storage`)
-      ]);
+      const [nextTargets, nextSchedules, nextGroups, nextStorage] =
+        await Promise.all([
+          request<Target[]>(`${base}/targets`),
+          request<Schedule[]>(`${base}/schedules`),
+          request<ManagementGroupStore[]>(`${base}/management-groups`),
+          request<EvidenceStorage>(`${base}/evidence-storage`)
+        ]);
       targets.value = nextTargets;
       schedules.value = nextSchedules;
       managementGroups.value = nextGroups;
@@ -550,7 +567,9 @@ function dispatch() {
       new Set(checklist.map((item) => item.label)).size !== checklist.length ||
       checklist.filter((item) => item.mode === 'PHOTO_REQUIRED').length > 12
     ) {
-      throw new Error('最多 20 个检查项、其中拍照项最多 12 个，名称不能重复且不超过 120 字');
+      throw new Error(
+        '最多 20 个检查项、其中拍照项最多 12 个，名称不能重复且不超过 120 字'
+      );
     }
     const time = new Date(due.value + '+08:00').toISOString();
     const cadenceValue = cadence.value;
@@ -717,14 +736,21 @@ function act(task: Task, action: 'claim' | 'submit' | 'complete') {
       const requiredIds = items
         .filter((item) => item.mode === 'PHOTO_REQUIRED')
         .map((item) => item.id);
-      if (task.sourceTaskId && !photos.value.length && !Object.keys(itemPhotos.value).length)
+      if (
+        task.sourceTaskId &&
+        !photos.value.length &&
+        !Object.keys(itemPhotos.value).length
+      )
         throw new Error('请至少上传一张整改照片');
       if (requiredIds.some((id) => !itemPhotos.value[id]))
         throw new Error('请为每个拍照检查项上传一张照片');
       body = new FormData();
       body.set('submission', submission.value);
       if (structured) {
-        body.set('confirmedItems', JSON.stringify(checkedItems.value.map(String)));
+        body.set(
+          'confirmedItems',
+          JSON.stringify(checkedItems.value.map(String))
+        );
       } else if (checkedItems.value.length) {
         body.set(
           'checkedItems',
@@ -866,14 +892,87 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="space-y-4">
-    <n-space align="center" justify="space-between">
-      <h1 class="text-xl font-semibold">运营任务</h1>
-      <RouterLink v-if="canReport" to="/v2/operational-tasks/report"
-        >任务统计与导出</RouterLink
+  <section class="task-workspace space-y-4">
+    <header class="workspace-header">
+      <div>
+        <p class="workspace-kicker">OPERATIONS WORKSPACE</p>
+        <h1 class="workspace-title">运营任务</h1>
+        <p class="workspace-subtitle">
+          集中处理派发、执行、复核与循环任务，配置项按需进入。
+        </p>
+      </div>
+      <n-space align="center">
+        <n-badge :value="inbox.unread" :max="99">
+          <n-button @click="inboxOpen = true">任务消息</n-button>
+        </n-badge>
+        <RouterLink v-if="canReport" to="/v2/operational-tasks/report">
+          <n-button>统计与导出</n-button>
+        </RouterLink>
+        <n-button
+          type="primary"
+          :loading="busy"
+          :disabled="busy"
+          @click="refresh"
+        >
+          刷新数据
+        </n-button>
+      </n-space>
+    </header>
+
+    <div class="workspace-overview">
+      <button
+        class="overview-item"
+        type="button"
+        @click="activeSection = 'mine'"
       >
-    </n-space>
-    <n-button :disabled="busy" @click="refresh">刷新</n-button>
+        <span>我的待办</span>
+        <strong>{{
+          assigned.filter(
+            (task) => task.status === 'PENDING' || task.status === 'CLAIMED'
+          ).length
+        }}</strong>
+        <small>当前页待处理任务</small>
+      </button>
+      <button
+        v-if="canManage"
+        class="overview-item"
+        type="button"
+        @click="activeSection = 'manage'"
+      >
+        <span>待复核</span>
+        <strong>{{
+          managed.filter((task) => task.status === 'SUBMITTED').length
+        }}</strong>
+        <small>当前页已提交任务</small>
+      </button>
+      <button
+        v-if="canManage"
+        class="overview-item"
+        type="button"
+        @click="activeSection = 'automation'"
+      >
+        <span>循环任务</span>
+        <strong>{{
+          schedules.filter((schedule) => schedule.enabled).length
+        }}</strong>
+        <small>正在运行的模板</small>
+      </button>
+      <button class="overview-item" type="button" @click="inboxOpen = true">
+        <span>未读消息</span>
+        <strong>{{ inbox.unread }}</strong>
+        <small>任务状态与结果提醒</small>
+      </button>
+    </div>
+
+    <n-card size="small" class="workspace-nav">
+      <n-tabs v-model:value="activeSection" type="segment" animated>
+        <n-tab-pane name="mine" tab="我的任务" />
+        <n-tab-pane v-if="canManage" name="dispatch" tab="派发任务" />
+        <n-tab-pane v-if="canManage" name="manage" tab="任务管理" />
+        <n-tab-pane v-if="canManage" name="automation" tab="循环任务" />
+        <n-tab-pane v-if="canManage" name="settings" tab="任务配置" />
+      </n-tabs>
+    </n-card>
     <n-alert
       v-if="errorMessage && !selectedTask && !reopenTask && !extensionDialog"
       type="error"
@@ -881,83 +980,113 @@ onUnmounted(() => {
     >
     <n-alert v-if="feedback" type="success">{{ feedback }}</n-alert>
 
-    <n-card size="small" title="任务消息">
-      <template #header-extra>
-        <n-badge :value="inbox.unread" :max="99">
-          <n-button size="small" @click="inboxOpen = !inboxOpen">{{
-            inboxOpen ? '收起' : '查看消息'
-          }}</n-button>
-        </n-badge>
-      </template>
-      <div v-if="inboxOpen">
-        <p v-if="!inbox.rows.length">暂无任务消息</p>
-        <p v-else>最多显示 30 条，未读优先。</p>
-        <div
-          v-for="message in inbox.rows"
-          :key="message.id"
-          class="border-b py-2"
-        >
-          <p class="font-semibold">
-            {{ inboxLabels[message.kind] }} · {{ message.task.title }}
-          </p>
-          <p>
-            {{ message.task.store.name }} ·
-            {{ time.format(new Date(message.createdAt)) }}
-          </p>
-          <p v-if="message.reason" class="whitespace-pre-wrap break-words">
-            {{ message.reason }}
-          </p>
-          <n-button
-            v-if="!message.readAt"
-            size="tiny"
-            :disabled="busy"
-            @click="readMessage(message.id)"
-            >标为已读</n-button
+    <n-modal :show="inboxOpen" @update:show="inboxOpen = $event">
+      <n-card
+        size="small"
+        title="任务消息"
+        class="message-dialog"
+        closable
+        @close="inboxOpen = false"
+      >
+        <template #header-extra>
+          <span class="message-count">{{ inbox.unread }} 条未读</span>
+        </template>
+        <div class="message-list">
+          <p v-if="!inbox.rows.length">暂无任务消息</p>
+          <p v-else>最多显示 30 条，未读优先。</p>
+          <div
+            v-for="message in inbox.rows"
+            :key="message.id"
+            class="border-b py-2"
           >
+            <p class="font-semibold">
+              {{ inboxLabels[message.kind] }} · {{ message.task.title }}
+            </p>
+            <p>
+              {{ message.task.store.name }} ·
+              {{ time.format(new Date(message.createdAt)) }}
+            </p>
+            <p v-if="message.reason" class="whitespace-pre-wrap break-words">
+              {{ message.reason }}
+            </p>
+            <n-button
+              v-if="!message.readAt"
+              size="tiny"
+              :disabled="busy"
+              @click="readMessage(message.id)"
+              >标为已读</n-button
+            >
+          </div>
         </div>
-      </div>
-    </n-card>
+      </n-card>
+    </n-modal>
 
-    <n-card v-if="canManage" title="门店任务执行组">
+    <n-card
+      v-if="canManage"
+      v-show="activeSection === 'settings'"
+      title="门店任务执行组"
+    >
       <n-alert type="info" :bordered="false" class="mb-3">
         门店管理组只决定谁能共同处理本店任务，不会改变员工岗位、薪资或账号权限；组内任意一人提交后，本店任务即不再需要其他成员重复完成。
       </n-alert>
-      <div v-for="store in managementGroups" :key="store.id" class="border-b py-3">
+      <div
+        v-for="store in managementGroups"
+        :key="store.id"
+        class="border-b py-3"
+      >
         <strong>{{ store.name }} · 门店管理组</strong>
         <n-select
           v-model:value="store.memberEmploymentIds"
           multiple
           filterable
-          :options="store.employments.map((employment) => ({
-            value: employment.id,
-            label: `${employment.employee.name} · ${employment.position.name} · ${employment.employee.employeeNo}`
-          }))"
+          :options="
+            store.employments.map((employment) => ({
+              value: employment.id,
+              label: `${employment.employee.name} · ${employment.position.name} · ${employment.employee.employeeNo}`
+            }))
+          "
           placeholder="选择店长、副店长、店助等执行成员"
           :disabled="busy"
         />
-        <n-button class="mt-2" size="small" :disabled="busy" @click="saveManagementGroup(store)">
+        <n-button
+          class="mt-2"
+          size="small"
+          :disabled="busy"
+          @click="saveManagementGroup(store)"
+        >
           保存本店执行组
         </n-button>
       </div>
     </n-card>
 
-    <n-card v-if="canManage && storage" title="任务图片存储">
+    <n-card
+      v-if="canManage && storage"
+      v-show="activeSection === 'settings'"
+      title="任务图片存储"
+    >
       <p>
-        当前 {{ storage.count }} 张，共 {{ formatStorage(storage.bytes) }}；最近 30 天
-        {{ storage.recentCount }} 张，共 {{ formatStorage(storage.recentBytes) }}。
+        当前 {{ storage.count }} 张，共 {{ formatStorage(storage.bytes) }}；最近
+        30 天 {{ storage.recentCount }} 张，共
+        {{ formatStorage(storage.recentBytes) }}。
       </p>
       <p v-if="storage.draftCount">
-        另有 {{ storage.draftCount }} 张未提交暂存图片，共 {{ formatStorage(storage.draftBytes) }}，24 小时后失效，后台每小时清理。
+        另有 {{ storage.draftCount }} 张未提交暂存图片，共
+        {{ formatStorage(storage.draftBytes) }}，24 小时后失效，后台每小时清理。
       </p>
       <p>
         上传原图单张不超过 5 MB，服务端压缩后单张不超过
-        {{ formatStorage(storage.perImageLimitBytes) }}，单次提交压缩后总量不超过
-        {{ formatStorage(storage.perSubmissionLimitBytes) }}。历史证据用于审计，不自动删除。
+        {{
+          formatStorage(storage.perImageLimitBytes)
+        }}，单次提交压缩后总量不超过
+        {{
+          formatStorage(storage.perSubmissionLimitBytes)
+        }}。历史证据用于审计，不自动删除。
       </p>
     </n-card>
 
     <n-card
       v-if="canManage"
+      v-show="activeSection === 'dispatch'"
       id="task-dispatch"
       :title="sourceTask ? '派发整改' : '派发任务'"
     >
@@ -965,7 +1094,10 @@ onUnmounted(() => {
         <span
           >来源：{{ sourceTask.title }} · {{ sourceTask.store.name
           }}<template v-if="sourceItemIndex !== undefined">
-            · {{ normalizedChecklist(sourceTask)[sourceItemIndex]?.label }}</template
+            ·
+            {{
+              normalizedChecklist(sourceTask)[sourceItemIndex]?.label
+            }}</template
           ></span
         >
         <n-button
@@ -1012,7 +1144,9 @@ onUnmounted(() => {
             ]"
             :disabled="busy"
           />
-          <n-button :disabled="busy" @click="removeChecklistItem(item.id)">删除</n-button>
+          <n-button :disabled="busy" @click="removeChecklistItem(item.id)"
+            >删除</n-button
+          >
         </div>
         <n-button
           size="small"
@@ -1044,7 +1178,9 @@ onUnmounted(() => {
           placeholder="任务执行门店与岗位（每组生成一项任务）"
           :disabled="busy"
         />
-        <p>可选择门店岗位或门店管理组；同一执行组只需一人提交，系统自动记录实际完成人。</p>
+        <p>
+          可选择门店岗位或门店管理组；同一执行组只需一人提交，系统自动记录实际完成人。
+        </p>
         <strong>结果抄送账号（选填）</strong>
         <n-select
           v-model:value="ccUsernames"
@@ -1062,7 +1198,9 @@ onUnmounted(() => {
         <n-alert type="info" :bordered="false">
           抄送人只在员工提交任务结果后收到通知，不会获得任务认领或执行权限；系统仅列出拥有全部已选门店任务管理权限的账号。
         </n-alert>
-        <n-alert v-if="ccError" type="error" :bordered="false">{{ ccError }}</n-alert>
+        <n-alert v-if="ccError" type="error" :bordered="false">{{
+          ccError
+        }}</n-alert>
         <label>
           {{ recurring ? '首次派发时间' : '截止时间' }}（北京时间）
           <input
@@ -1099,7 +1237,11 @@ onUnmounted(() => {
       </form>
     </n-card>
 
-    <n-card v-if="canManage" title="循环模板（最近 100 项）">
+    <n-card
+      v-if="canManage"
+      v-show="activeSection === 'automation'"
+      title="循环模板（最近 100 项）"
+    >
       <p v-if="!schedules.length">暂无循环模板</p>
       <div
         v-for="schedule in schedules"
@@ -1128,7 +1270,12 @@ onUnmounted(() => {
       </div>
     </n-card>
 
-    <n-alert v-if="reminders.length" type="warning" title="未来 2 小时内截止">
+    <n-alert
+      v-if="reminders.length"
+      v-show="activeSection === 'mine'"
+      type="warning"
+      title="未来 2 小时内截止"
+    >
       <ul>
         <li v-for="reminder in reminders" :key="reminder.id">
           {{ reminder.title }} · {{ reminder.store.name }} ·
@@ -1137,7 +1284,7 @@ onUnmounted(() => {
       </ul>
     </n-alert>
 
-    <n-card title="我的任务">
+    <n-card v-show="activeSection === 'mine'" title="我的任务">
       <n-space class="mb-3">
         <n-button
           :type="assignedMode === 'ACTIVE' ? 'primary' : 'default'"
@@ -1168,8 +1315,12 @@ onUnmounted(() => {
             检查清单 · {{ task.checklistConfirmed ? '已逐项确认' : '待确认' }}
           </summary>
           <ol class="list-decimal pl-6">
-            <li v-for="(item, index) in normalizedChecklist(task)" :key="item.id">
-              {{ item.label }}{{ item.mode === 'PHOTO_REQUIRED' ? '（需拍照）' : '' }}
+            <li
+              v-for="(item, index) in normalizedChecklist(task)"
+              :key="item.id"
+            >
+              {{ item.label
+              }}{{ item.mode === 'PHOTO_REQUIRED' ? '（需拍照）' : '' }}
               <p
                 v-if="task.checklistIssues?.[item.id]"
                 class="whitespace-pre-wrap break-words"
@@ -1189,7 +1340,11 @@ onUnmounted(() => {
             size="small"
             @click="openPhoto(task.id, photo.id)"
           >
-            {{ photo.checklistItemId ? checklistLabel(task, photo.checklistItemId) : `照片 ${index + 1}` }}
+            {{
+              photo.checklistItemId
+                ? checklistLabel(task, photo.checklistItemId)
+                : `照片 ${index + 1}`
+            }}
           </n-button>
         </n-space>
         <p v-if="task.reopenHistory[0]" class="whitespace-pre-wrap">
@@ -1198,7 +1353,10 @@ onUnmounted(() => {
           }}原因：{{ task.reopenHistory[0].reason }}
         </p>
         <n-button
-          v-if="(task.status === 'PENDING' || task.status === 'CLAIMED') && !isExpired(task)"
+          v-if="
+            (task.status === 'PENDING' || task.status === 'CLAIMED') &&
+            !isExpired(task)
+          "
           :disabled="busy"
           @click="openSubmission(task)"
           >填写并提交</n-button
@@ -1219,7 +1377,11 @@ onUnmounted(() => {
       </n-space>
     </n-card>
 
-    <n-card v-if="canReviewExtensions" title="总部补交审批（最早 50 项）">
+    <n-card
+      v-if="canReviewExtensions"
+      v-show="activeSection === 'manage'"
+      title="总部补交审批（最早 50 项）"
+    >
       <p v-if="!pendingExtensions.length">暂无待审批申请</p>
       <div
         v-for="extension in pendingExtensions"
@@ -1243,7 +1405,11 @@ onUnmounted(() => {
       </div>
     </n-card>
 
-    <n-card v-if="canManage" title="派发进度">
+    <n-card
+      v-if="canManage"
+      v-show="activeSection === 'manage'"
+      title="派发进度"
+    >
       <form class="mb-4" @submit.prevent="applyManagementFilters">
         <n-space align="center">
           <n-select
@@ -1300,8 +1466,12 @@ onUnmounted(() => {
             检查清单 · {{ task.checklistConfirmed ? '已逐项确认' : '待确认' }}
           </summary>
           <ol class="list-decimal pl-6">
-            <li v-for="(item, index) in normalizedChecklist(task)" :key="item.id">
-              {{ item.label }}{{ item.mode === 'PHOTO_REQUIRED' ? '（需拍照）' : '' }}
+            <li
+              v-for="(item, index) in normalizedChecklist(task)"
+              :key="item.id"
+            >
+              {{ item.label
+              }}{{ item.mode === 'PHOTO_REQUIRED' ? '（需拍照）' : '' }}
               <p
                 v-if="task.checklistIssues?.[item.id]"
                 class="whitespace-pre-wrap break-words"
@@ -1332,7 +1502,11 @@ onUnmounted(() => {
             size="small"
             @click="openPhoto(task.id, photo.id)"
           >
-            {{ photo.checklistItemId ? checklistLabel(task, photo.checklistItemId) : `照片 ${index + 1}` }}
+            {{
+              photo.checklistItemId
+                ? checklistLabel(task, photo.checklistItemId)
+                : `照片 ${index + 1}`
+            }}
           </n-button>
         </n-space>
         <details v-if="task.extensions?.length" class="my-2">
@@ -1660,7 +1834,8 @@ onUnmounted(() => {
               busy ||
               !submission.trim() ||
               Boolean(photoError) ||
-              checkedItems.length !== normalizedChecklist(selectedTask).length ||
+              checkedItems.length !==
+                normalizedChecklist(selectedTask).length ||
               normalizedChecklist(selectedTask).some(
                 (item) => item.mode === 'PHOTO_REQUIRED' && !itemPhotos[item.id]
               ) ||
@@ -1691,3 +1866,137 @@ onUnmounted(() => {
     </n-modal>
   </section>
 </template>
+
+<style scoped>
+.task-workspace {
+  --task-border: #e3e9f1;
+  --task-muted: #64748b;
+  --task-ink: #172033;
+}
+
+.workspace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 24px 26px;
+  border: 1px solid #dce7f4;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 90% 10%, rgb(41 121 255 / 10%), transparent 35%),
+    linear-gradient(135deg, #f8fbff, #ffffff 58%);
+  box-shadow: 0 12px 34px rgb(30 64 175 / 7%);
+}
+
+.workspace-kicker {
+  margin: 0 0 4px;
+  color: #4372b7;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.workspace-title {
+  margin: 0;
+  color: var(--task-ink);
+  font-size: 26px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.workspace-subtitle {
+  margin: 7px 0 0;
+  color: var(--task-muted);
+}
+
+.workspace-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.overview-item {
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--task-border);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--task-muted);
+  text-align: left;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.overview-item:hover {
+  border-color: #9cc0ee;
+  box-shadow: 0 8px 22px rgb(37 99 235 / 9%);
+  transform: translateY(-1px);
+}
+
+.overview-item span,
+.overview-item small {
+  display: block;
+}
+
+.overview-item strong {
+  display: block;
+  margin: 3px 0 1px;
+  color: var(--task-ink);
+  font-size: 25px;
+  line-height: 1.2;
+}
+
+.overview-item small {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-nav :deep(.n-tabs-nav) {
+  margin-bottom: 0;
+}
+
+.workspace-nav :deep(.n-tab-pane) {
+  display: none;
+}
+
+.message-dialog {
+  width: min(680px, 92vw);
+  max-height: 82vh;
+}
+
+.message-list {
+  max-height: 66vh;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.message-count {
+  color: var(--task-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .workspace-header {
+    flex-direction: column;
+    padding: 20px;
+  }
+
+  .workspace-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .workspace-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-header :deep(.n-space) {
+    width: 100%;
+  }
+}
+</style>
