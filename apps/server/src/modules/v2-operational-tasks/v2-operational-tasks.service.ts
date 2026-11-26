@@ -217,19 +217,48 @@ export class V2OperationalTasksService
   }
 
   private async cleanupEvidenceDrafts() {
+    const startedAt = new Date();
+    const staleClaim = new Date(startedAt.getTime() - 15 * 60_000);
     try {
-      const drafts = await this.prisma.v2OperationalTaskEvidenceDraft.findMany({
-        where: { expiresAt: { lte: new Date() } },
-        select: { id: true, objectKey: true },
-        orderBy: { expiresAt: 'asc' },
-        take: 100
-      });
-      for (const draft of drafts) {
-        const deleted =
-          await this.prisma.v2OperationalTaskEvidenceDraft.deleteMany({
-            where: { id: draft.id, expiresAt: { lte: new Date() } }
-          });
-        if (deleted.count) await this.objectStorage.delete(draft.objectKey);
+      for (let batch = 0; batch < 5; batch++) {
+        const drafts = await this.prisma.v2OperationalTaskEvidenceDraft.findMany({
+          where: {
+            expiresAt: { lte: startedAt },
+            OR: [
+              { cleanupClaimedAt: null },
+              { cleanupClaimedAt: { lte: staleClaim } }
+            ]
+          },
+          select: { id: true, objectKey: true },
+          orderBy: { expiresAt: 'asc' },
+          take: 100
+        });
+        if (!drafts.length) break;
+        for (const draft of drafts) {
+          const claimTime = new Date();
+          const claimed =
+            await this.prisma.v2OperationalTaskEvidenceDraft.updateMany({
+              where: {
+                id: draft.id,
+                expiresAt: { lte: startedAt },
+                OR: [
+                  { cleanupClaimedAt: null },
+                  { cleanupClaimedAt: { lte: staleClaim } }
+                ]
+              },
+              data: { cleanupClaimedAt: claimTime }
+            });
+          if (!claimed.count) continue;
+          try {
+            await this.objectStorage.delete(draft.objectKey);
+            await this.prisma.v2OperationalTaskEvidenceDraft.deleteMany({
+              where: { id: draft.id, cleanupClaimedAt: claimTime }
+            });
+          } catch {
+            this.logger.warn(`任务暂存图片清理失败：${draft.objectKey}`);
+          }
+        }
+        if (drafts.length < 100) break;
       }
     } catch {
       this.logger.warn('任务暂存图片清理失败，稍后重试');
@@ -1616,21 +1645,22 @@ export class V2OperationalTasksService
         } else if (items.some((item) => item.mode === 'PHOTO_REQUIRED')) {
           throw new BadRequestException('请选择照片对应的检查项');
         }
-        const replaced = await tx.v2OperationalTaskEvidenceDraft.findMany({
+        await tx.v2OperationalTaskEvidenceDraft.updateMany({
           where: {
             taskId,
             employeeId,
-            checklistItemId: checklistItemId ?? null
+            checklistItemId: checklistItemId ?? null,
+            cleanupClaimedAt: null
           },
-          select: { id: true, objectKey: true }
+          data: { expiresAt: new Date() }
         });
-        if (replaced.length) {
-          await tx.v2OperationalTaskEvidenceDraft.deleteMany({
-            where: { id: { in: replaced.map((draft) => draft.id) } }
-          });
-        }
         const existing = await tx.v2OperationalTaskEvidenceDraft.aggregate({
-          where: { taskId, employeeId, expiresAt: { gt: new Date() } },
+          where: {
+            taskId,
+            employeeId,
+            expiresAt: { gt: new Date() },
+            cleanupClaimedAt: null
+          },
           _sum: { byteSize: true }
         });
         if (
@@ -1658,13 +1688,9 @@ export class V2OperationalTasksService
             expiresAt: true
           }
         });
-        return {
-          draft,
-          replacedKeys: replaced.map((entry) => entry.objectKey)
-        };
+        return draft;
       });
-      void this.deleteStoredEvidence(result.replacedKeys);
-      return result.draft;
+      return result;
     } catch (error) {
       await this.deleteStoredEvidence([stored.objectKey]);
       throw error;
@@ -1760,7 +1786,8 @@ export class V2OperationalTasksService
             id: { in: evidenceDraftIds },
             taskId: id,
             employeeId: before.employeeId,
-            expiresAt: { gt: new Date() }
+            expiresAt: { gt: new Date() },
+            cleanupClaimedAt: null
           }
         })
       : [];
@@ -1824,6 +1851,32 @@ export class V2OperationalTasksService
         const now = new Date();
         const finalStatus =
           task.reviewMode === 'AUTO_COMPLETE' ? 'DONE' : 'SUBMITTED';
+        const draftClaimTime = evidenceDraftIds.length ? new Date() : null;
+        if (draftClaimTime) {
+          const claimedDrafts =
+            await tx.v2OperationalTaskEvidenceDraft.updateMany({
+              where: {
+                id: { in: evidenceDraftIds },
+                taskId: id,
+                employeeId,
+                expiresAt: { gt: now },
+                cleanupClaimedAt: null
+              },
+              data: { cleanupClaimedAt: draftClaimTime }
+            });
+          if (claimedDrafts.count !== evidenceDraftIds.length)
+            throw new BadRequestException('暂存照片已失效，请重新选择');
+        }
+        const currentDrafts = draftClaimTime
+          ? await tx.v2OperationalTaskEvidenceDraft.findMany({
+              where: {
+                id: { in: evidenceDraftIds },
+                taskId: id,
+                employeeId,
+                cleanupClaimedAt: draftClaimTime
+              }
+            })
+          : [];
         const result = await tx.v2OperationalTask.updateMany({
           where: {
             id,
@@ -1852,18 +1905,6 @@ export class V2OperationalTasksService
         });
         if (!result.count)
           throw new ConflictException('任务状态已变更或已截止，请刷新待办');
-        const currentDrafts = evidenceDraftIds.length
-          ? await tx.v2OperationalTaskEvidenceDraft.findMany({
-              where: {
-                id: { in: evidenceDraftIds },
-                taskId: id,
-                employeeId,
-                expiresAt: { gt: now }
-              }
-            })
-          : [];
-        if (currentDrafts.length !== evidenceDraftIds.length)
-          throw new BadRequestException('暂存照片已失效，请重新选择');
         for (const [index, image] of images.entries()) {
           const stored = storedImages[index];
           await tx.v2OperationalTaskEvidence.create({

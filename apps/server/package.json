@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --ext .ts",
     "prisma": "prisma",
+    "storage:check": "ts-node -r tsconfig-paths/register src/scripts/check-task-evidence-storage.ts",
     "seed": "ts-node -r tsconfig-paths/register src/database/seed.ts",
     "test:v2-regression": "ts-node -r tsconfig-paths/register src/modules/v2-data-platform/regression.ts && ts-node src/modules/v2-attendance/attendance-code.regression.ts && ts-node src/modules/v2-operations/usage-analytics-cache.regression.ts && ts-node src/modules/v2-operations/schedule-cycle.regression.ts && ts-node -r tsconfig-paths/register src/modules/v2-operational-tasks/task-workflow.regression.ts && ts-node src/common/direct-account-access.regression.ts && ts-node -r tsconfig-paths/register src/modules/v2-operations/store-center-ranking.regression.ts",
     "test:v2-revenue-contract": "ts-node -r tsconfig-paths/register src/modules/v2-data-platform/revenue-contract.regression.ts",

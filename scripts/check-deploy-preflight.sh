@@ -18,6 +18,9 @@ cat > "$fixture/bin/pnpm" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$CALLS"
+if [ "$*" = "--filter @bluecat/server storage:check" ] && [ "${FAIL_STORAGE_CHECK:-false}" = "true" ]; then
+  exit 42
+fi
 if [ "$*" = "build" ]; then
   mkdir -p apps/server/dist apps/web/dist
   printf '%s\n' 'console.log("fixture");' > apps/server/dist/main.js
@@ -77,7 +80,26 @@ if grep -qx 'prisma:deploy' "$CALLS"; then
 fi
 
 pnpm build
+: > "$CALLS"
+export FAIL_STORAGE_CHECK=true
+if bash scripts/deploy-prod.sh >/dev/null 2>&1; then
+  echo 'Deployment unexpectedly continued after storage preflight failure' >&2
+  exit 1
+fi
+if grep -qx 'prisma:deploy' "$CALLS"; then
+  echo 'Migration ran after storage preflight failure' >&2
+  exit 1
+fi
+unset FAIL_STORAGE_CHECK
+: > "$CALLS"
 bash scripts/deploy-prod.sh >/dev/null
+grep -qx -- '--filter @bluecat/server storage:check' "$CALLS"
 grep -qx 'prisma:deploy' "$CALLS"
 grep -qx 'pm2 startOrReload ecosystem.config.cjs --env production' "$CALLS"
+storage_line="$(grep -n -m1 -x -- '--filter @bluecat/server storage:check' "$CALLS" | cut -d: -f1)"
+migration_line="$(grep -n -m1 -x 'prisma:deploy' "$CALLS" | cut -d: -f1)"
+if [ "$storage_line" -ge "$migration_line" ]; then
+  echo 'Storage preflight did not run before database migration' >&2
+  exit 1
+fi
 echo 'Deployment preflight regression checks passed'

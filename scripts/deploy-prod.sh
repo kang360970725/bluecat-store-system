@@ -21,6 +21,9 @@ pnpm install --frozen-lockfile --prod=false
 echo "Generating Prisma Client..."
 pnpm prisma:generate
 
+echo "Checking private task evidence storage..."
+pnpm --filter @bluecat/server storage:check
+
 if [ "${DEPLOY_PREBUILT:-false}" != "true" ]; then
   echo "Building workspace sequentially..."
   pnpm --filter @bluecat/shared build

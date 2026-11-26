@@ -2484,10 +2484,11 @@ model V2OperationalTaskEvidenceDraft {
   width           Int?
   height          Int?
   expiresAt       DateTime          @map("expires_at")
+  cleanupClaimedAt DateTime?        @map("cleanup_claimed_at")
   createdAt       DateTime          @default(now()) @map("created_at")
 
   @@index([taskId, employeeId, expiresAt])
-  @@index([expiresAt])
+  @@index([expiresAt, cleanupClaimedAt])
   @@map("v2_operational_task_evidence_drafts")
 }
 

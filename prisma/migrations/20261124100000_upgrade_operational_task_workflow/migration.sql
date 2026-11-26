@@ -78,10 +78,11 @@ CREATE TABLE `v2_operational_task_evidence_drafts` (
   `width` INTEGER NULL,
   `height` INTEGER NULL,
   `expires_at` DATETIME(3) NOT NULL,
+  `cleanup_claimed_at` DATETIME(3) NULL,
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   UNIQUE INDEX `v2_operational_task_evidence_drafts_object_key_key` (`object_key`),
   INDEX `v2_operational_task_evidence_drafts_task_employee_expiry_idx` (`task_id`, `employee_id`, `expires_at`),
-  INDEX `v2_operational_task_evidence_drafts_expires_at_idx` (`expires_at`),
+  INDEX `v2_operational_task_evidence_drafts_expiry_cleanup_idx` (`expires_at`, `cleanup_claimed_at`),
   PRIMARY KEY (`id`),
   CONSTRAINT `v2_operational_task_evidence_drafts_task_id_fkey`
     FOREIGN KEY (`task_id`) REFERENCES `v2_operational_tasks` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
