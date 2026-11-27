@@ -2376,6 +2376,7 @@ enum V2OperationalTaskReviewMode {
 }
 
 model V2OperationalTask {
+  category String? @db.VarChar(40)
   checklistIssues Json? @map("checklist_issues")
   sourceIssue Json? @map("source_issue")
   ccRecipients Json? @map("cc_recipients")
@@ -2504,6 +2505,8 @@ enum V2OperationalTaskCadence {
 }
 
 model V2OperationalTaskSchedule {
+  category String? @db.VarChar(40)
+  archivedAt DateTime? @map("archived_at")
   ccRecipients Json? @map("cc_recipients")
   checklist Json?
   batchId       String                   @map("batch_id") @db.VarChar(64)

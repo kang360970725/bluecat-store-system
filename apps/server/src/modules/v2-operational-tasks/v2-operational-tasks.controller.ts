@@ -126,6 +126,11 @@ class CcOptionsDto {
 }
 
 class DispatchDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  category?: string;
+
   @IsUUID()
   batchId!: string;
 
@@ -184,6 +189,11 @@ class DispatchDto {
 }
 
 class ScheduleDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  category?: string;
+
   @IsUUID()
   requestId!: string;
 
@@ -471,6 +481,11 @@ export class V2OperationalTasksController {
   @Post('dispatch')
   dispatch(@CurrentUserInfo() user: CurrentUser, @Body() body: DispatchDto) {
     return this.tasks.dispatch(user.id, body);
+  }
+
+  @Post('schedules/:id/archive')
+  archiveSchedule(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
+    return this.tasks.setScheduleEnabled(user.id, id, false, true);
   }
 
   @Post(':id/claim')

@@ -62,6 +62,7 @@ export interface TaskListFilters {
 const managementPageSize = 20;
 
 interface DispatchInput {
+  category?: string;
   batchId: string;
   title: string;
   description: string;
@@ -77,7 +78,7 @@ interface DispatchInput {
 
 interface ScheduleInput extends Pick<
   DispatchInput,
-  'title' | 'description' | 'checklist' | 'ccUsernames' | 'reviewMode'
+  'title' | 'description' | 'checklist' | 'ccUsernames' | 'reviewMode' | 'category'
 > {
   requestId: string;
   targets: Array<Pick<Target, 'storeId' | 'targetKey'>>;
@@ -147,6 +148,14 @@ function savedCc(value: Prisma.JsonValue | null) {
       ? [{ accountId: entry.accountId, username: entry.username }]
       : []
   );
+}
+
+function sameCc(value: Prisma.JsonValue | null, selections: string[]) {
+  const recipients = savedCc(value);
+  return recipients.length === selections.length &&
+    recipients.every(({ username, accountId }) =>
+      selections.includes(username) || selections.includes(`id:${accountId}`)
+    );
 }
 
 function jsonObject(value: Prisma.JsonValue | null): Prisma.JsonObject {
@@ -928,14 +937,20 @@ export class V2OperationalTasksService
   }
 
   async schedules(accountId: string) {
-    const access = await this.manageAccess(accountId, this.prisma);
+    await this.account(accountId);
+    const access = await resolveScopedPermission(accountId, 'operational-task:manage', this.prisma);
     return this.prisma.v2OperationalTaskSchedule.findMany({
       where: {
         store: { deletedAt: null },
-        storeId: access.storeIds ? { in: access.storeIds } : undefined
+        archivedAt: null,
+        OR: access?.storeIds === null ? undefined : [
+          { createdBy: accountId },
+          ...(access?.storeIds ? [{ storeId: { in: access.storeIds } }] : [])
+        ]
       },
       select: {
         id: true,
+        category: true,
         title: true,
         targetName: true,
         cadence: true,
@@ -951,6 +966,7 @@ export class V2OperationalTasksService
   }
 
   async createSchedule(accountId: string, input: ScheduleInput) {
+    const category = input.category?.trim() || null;
     const title = input.title.trim();
     const description = input.description.trim();
     const checklist = normalizeChecklist(input.checklist);
@@ -960,12 +976,7 @@ export class V2OperationalTasksService
       throw new BadRequestException('请填写任务名称、说明和未来的首次派发时间');
     }
     return this.write(async (tx) => {
-      const access = await this.manageAccess(accountId, tx);
-      if (
-        access.storeIds &&
-        input.targets.some((target) => !access.storeIds?.includes(target.storeId))
-      )
-        throw new ForbiddenException('无权向该门店派发任务');
+      await this.account(accountId, tx);
       const requested = new Set(input.targets.map((target) => this.targetId(target)));
       const existing = await tx.v2OperationalTaskSchedule.findMany({
         where: { createdBy: accountId, batchId: input.requestId }
@@ -977,11 +988,11 @@ export class V2OperationalTasksService
             (schedule) =>
               requested.has(this.targetId(schedule)) &&
               schedule.title === title &&
+              schedule.category === category &&
               schedule.description === description &&
               JSON.stringify(schedule.checklist ?? []) === JSON.stringify(checklist) &&
               schedule.reviewMode === (input.reviewMode ?? 'REQUIRED') &&
-              JSON.stringify(savedCc(schedule.ccRecipients).map((item) => item.username)) ===
-                JSON.stringify(ccUsernames) &&
+              sameCc(schedule.ccRecipients, ccUsernames) &&
               schedule.cadence === input.cadence &&
               schedule.firstRunAt.getTime() === firstRunAt.getTime() &&
               schedule.dueHours === input.dueHours
@@ -1014,6 +1025,7 @@ export class V2OperationalTasksService
           targetKey: target.targetKey,
           targetName: target.targetName,
           title,
+          category,
           description,
           checklist,
           ccRecipients,
@@ -1030,17 +1042,31 @@ export class V2OperationalTasksService
     });
   }
 
-  async setScheduleEnabled(accountId: string, id: string, enabled: boolean) {
+  async setScheduleEnabled(accountId: string, id: string, enabled: boolean, archive = false) {
     return this.write(async (tx) => {
-      const access = await this.manageAccess(accountId, tx);
+      await this.account(accountId, tx);
+      const access = await resolveScopedPermission(accountId, 'operational-task:manage', tx);
       const schedule = await tx.v2OperationalTaskSchedule.findFirst({
         where: {
           id,
           store: { deletedAt: null },
-          storeId: access.storeIds ? { in: access.storeIds } : undefined
+          OR: access?.storeIds === null ? undefined : [
+            { createdBy: accountId },
+            ...(access?.storeIds ? [{ storeId: { in: access.storeIds } }] : [])
+          ]
         }
       });
       if (!schedule) throw new ForbiddenException('无权操作该循环模板');
+      if (archive) {
+        if (!schedule.archivedAt) {
+          await tx.v2OperationalTaskSchedule.update({
+            where: { id },
+            data: { enabled: false, archivedAt: new Date() }
+          });
+        }
+        return { enabled: false };
+      }
+      if (schedule.archivedAt) throw new BadRequestException('循环模板已移除');
       if (schedule.enabled === enabled) return { enabled };
       let nextRunAt = schedule.nextRunAt;
       if (enabled) {
@@ -1102,24 +1128,21 @@ export class V2OperationalTasksService
         where: { id, enabled: true, nextRunAt: { lte: now } }
       });
       if (!schedule) return;
-      const access = await resolveScopedPermission(
-        schedule.scheduledBy,
-        'operational-task:manage',
-        tx
-      );
-      const target =
-        access &&
-        (!access.storeIds || access.storeIds.includes(schedule.storeId))
-          ? (await this.targets(undefined, tx, schedule.storeId)).find(
-              (item) => item.targetKey === schedule.targetKey
-            )
-          : undefined;
+      const sponsor = await this.account(schedule.scheduledBy, tx).catch((error) => {
+        if (error instanceof ForbiddenException) return null;
+        throw error;
+      });
+      const target = sponsor
+        ? (await this.targets(undefined, tx, schedule.storeId)).find(
+            (item) => item.targetKey === schedule.targetKey
+          )
+        : undefined;
       if (!target) {
         await tx.v2OperationalTaskSchedule.update({
           where: { id },
           data: {
             enabled: false,
-            pauseReason: '派发账号授权、门店或岗位已失效'
+            pauseReason: '派发账号、门店或岗位已失效'
           }
         });
         return;
@@ -1147,6 +1170,7 @@ export class V2OperationalTasksService
           targetKey: target.targetKey,
           targetName: target.targetName,
           title: schedule.title,
+          category: schedule.category,
           description: schedule.description,
           ccRecipients: savedCc(schedule.ccRecipients),
           checklist: Array.isArray(schedule.checklist)
@@ -1161,10 +1185,8 @@ export class V2OperationalTasksService
   }
 
   async dispatchTargets(accountId: string) {
-    const access = await this.manageAccess(accountId, this.prisma);
-    return (await this.targets()).filter(
-      (target) => !access.storeIds || access.storeIds.includes(target.storeId)
-    );
+    await this.account(accountId);
+    return this.targets();
   }
 
   async managementGroups(accountId: string) {
@@ -1316,19 +1338,13 @@ export class V2OperationalTasksService
   }
 
   async ccOptions(accountId: string, rawStoreIds: string[]) {
+    await this.account(accountId);
     const storeIds = [
       ...new Set(rawStoreIds.map((storeId) => storeId.trim()).filter(Boolean))
     ];
     if (!storeIds.length) return [];
     if (storeIds.length > 50 || storeIds.some((storeId) => storeId.length > 100))
       throw new BadRequestException('抄送门店范围无效');
-    const requester = await this.manageAccess(accountId, this.prisma);
-    if (
-      requester.storeIds &&
-      storeIds.some((storeId) => !requester.storeIds?.includes(storeId))
-    ) {
-      throw new ForbiddenException('无权查看所选门店的抄送账号');
-    }
     const [accounts, stores] = await Promise.all([
       this.prisma.v2Account.findMany({
         where: {
@@ -1367,7 +1383,7 @@ export class V2OperationalTasksService
       }
       return [
         {
-          username: account.username,
+          value: `id:${account.id}`,
           displayName: account.displayName,
           allStores: access.storeIds === null,
           stores:
@@ -1381,6 +1397,7 @@ export class V2OperationalTasksService
   }
 
   async dispatch(accountId: string, input: DispatchInput) {
+    const category = input.category?.trim() || null;
     const title = input.title.trim();
     const description = input.description.trim();
     const checklist = normalizeChecklist(input.checklist);
@@ -1390,8 +1407,11 @@ export class V2OperationalTasksService
       throw new BadRequestException('请填写任务名称、说明和未来的截止时间');
     }
     return this.write(async (tx) => {
-      const access = await this.manageAccess(accountId, tx);
       const sourceTaskId = input.sourceTaskId ?? null;
+      await this.account(accountId, tx);
+      const rectificationAccess = sourceTaskId
+        ? await this.manageAccess(accountId, tx)
+        : null;
       const sourceItemIndex = input.sourceItemIndex ?? null;
       const revision = input.sourceSubmittedAt
         ? new Date(input.sourceSubmittedAt)
@@ -1408,9 +1428,9 @@ export class V2OperationalTasksService
         throw new BadRequestException('检查项整改必须指定原任务和提交轮次');
       }
       if (
-        access.storeIds &&
+        rectificationAccess?.storeIds &&
         input.targets.some(
-          (target) => !access.storeIds?.includes(target.storeId)
+          (target) => !rectificationAccess.storeIds?.includes(target.storeId)
         )
       ) {
         throw new ForbiddenException('无权向该门店派发任务');
@@ -1424,6 +1444,7 @@ export class V2OperationalTasksService
           storeId: true,
           targetKey: true,
           title: true,
+          category: true,
           description: true,
           checklist: true,
           reviewMode: true,
@@ -1441,6 +1462,7 @@ export class V2OperationalTasksService
             (task) =>
               requested.has(this.targetId(task)) &&
               task.title === title &&
+              task.category === category &&
               task.description === description &&
               JSON.stringify(task.checklist ?? []) ===
                 JSON.stringify(checklist) &&
@@ -1452,9 +1474,7 @@ export class V2OperationalTasksService
                 sourceItemIndex &&
               (jsonObject(task.sourceIssue).submittedAt ?? null) ===
                 sourceSubmittedAt &&
-              JSON.stringify(
-                savedCc(task.ccRecipients).map((item) => item.username)
-              ) === JSON.stringify(ccUsernames)
+              sameCc(task.ccRecipients, ccUsernames)
           );
         if (!sameBatch)
           throw new ConflictException('此派发批次已使用，请重新发起');
@@ -1534,6 +1554,7 @@ export class V2OperationalTasksService
           sourceTaskId,
           sourceIssue,
           title,
+          category,
           description,
           checklist,
           reviewMode: input.reviewMode ?? 'REQUIRED',
@@ -2135,15 +2156,17 @@ export class V2OperationalTasksService
     storeIds: string[]
   ) {
     const recipients: Array<{ accountId: string; username: string }> = [];
-    for (const username of usernames) {
+    for (const selection of usernames) {
       const account = await tx.v2Account.findFirst({
         where: {
-          username,
+          ...(selection.startsWith('id:')
+            ? { id: selection.slice(3) }
+            : { username: selection }),
           status: 'ACTIVE',
           deletedAt: null,
           mustChangePassword: false
         },
-        select: { id: true }
+        select: { id: true, username: true }
       });
       const access =
         account &&
@@ -2163,7 +2186,9 @@ export class V2OperationalTasksService
           '抄送账号无效，或未获得全部目标门店的任务管理权限'
         );
       }
-      recipients.push({ accountId: account.id, username });
+      if (recipients.some(({ accountId }) => accountId === account.id))
+        throw new BadRequestException('抄送账号重复');
+      recipients.push({ accountId: account.id, username: account.username });
     }
     return recipients;
   }

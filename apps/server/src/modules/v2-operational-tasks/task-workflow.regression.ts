@@ -9,11 +9,75 @@ import {
 } from './task-evidence';
 import {
   checklistItems,
-  normalizeChecklist
+  normalizeChecklist,
+  V2OperationalTasksService
 } from './v2-operational-tasks.service';
 import { TaskEvidenceObjectStorage } from './task-evidence-storage';
+import type { PrismaService } from '../../database/prisma.service';
+
+async function checkPublishing() {
+  const ordinaryAccount = {
+    status: 'ACTIVE',
+    usesAccountRoles: true,
+    employeeId: null,
+    roles: [],
+    storeScopes: []
+  };
+  const taskWrites: unknown[] = [];
+  const templateWrites: unknown[] = [];
+  const db = {
+    $transaction: (action: (tx: unknown) => unknown) => action(db),
+    v2Account: { findFirst: async () => ordinaryAccount },
+    v2Employment: {
+      findMany: async () => [
+        { store: { id: 'store-1', name: '一店' }, position: { id: 'cashier', name: '收银' } }
+      ]
+    },
+    v2OrganizationEmployment: { findMany: async () => [] },
+    v2OperationalTaskExecutorGroup: { findMany: async () => [] },
+    v2OperationalTask: {
+      findMany: async () => [],
+      createMany: async ({ data }: { data: unknown[] }) => taskWrites.push(...data),
+      create: async ({ data }: { data: unknown }) => taskWrites.push(data)
+    },
+    v2OperationalTaskSchedule: {
+      findMany: async () => [],
+      findFirst: async () => templateWrites[0],
+      createMany: async ({ data }: { data: unknown[] }) => templateWrites.push(...data),
+      updateMany: async () => ({ count: 1 })
+    }
+  };
+  const config = new ConfigService();
+  const service = new V2OperationalTasksService(
+    db as unknown as PrismaService, config, new TaskEvidenceObjectStorage(config)
+  );
+  const targets = await service.dispatchTargets('ordinary-account');
+  assert.equal(targets[0]?.targetKey, 'store:cashier');
+  const input = {
+    title: '卫生自查',
+    description: '检查吧台',
+    category: '门店自查',
+    targets: [{ storeId: 'store-1', targetKey: 'store:cashier' }]
+  };
+  const future = new Date(Date.now() + 3_600_000).toISOString();
+  assert.deepEqual(await service.dispatch('ordinary-account', {
+    ...input, batchId: 'single', dueAt: future
+  }), { count: 1 });
+  await assert.rejects(service.dispatch('ordinary-account', {
+    ...input, batchId: 'rectification', sourceTaskId: 'original', dueAt: future
+  }), /缺少运营任务权限/);
+  assert.deepEqual(await service.createSchedule('ordinary-account', {
+    ...input, requestId: 'recurring', cadence: 'DAILY', firstRunAt: future, dueHours: 2
+  }), { count: 1 });
+  Object.assign(templateWrites[0] as object, { nextRunAt: new Date(Date.now() - 1000) });
+  await (service as unknown as { runSchedule(id: string): Promise<void> }).runSchedule('recurring:0');
+  assert.equal(taskWrites.length, 2);
+  assert.deepEqual(taskWrites.map((task) => (task as { category: string }).category),
+    ['门店自查', '门店自查']);
+}
 
 async function main() {
+  await checkPublishing();
   const legacy = normalizeChecklist(['门口整洁', '吧台无私人物品']);
   assert.deepEqual(legacy, [
     { id: '0', label: '门口整洁', mode: 'CONFIRM' },

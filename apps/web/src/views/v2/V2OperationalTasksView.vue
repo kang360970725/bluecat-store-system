@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NInputNumber } from 'naive-ui';
+import { NBadge, NInputNumber, NTabPane, NTabs } from 'naive-ui';
 import { NSelect } from '@/components/Select';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { API_BASE_URL, request } from '@/api/http';
@@ -20,7 +20,7 @@ interface ChecklistItem {
 }
 
 interface CcOption {
-  username: string;
+  value: string;
   displayName: string;
   allStores: boolean;
   stores: string[];
@@ -53,6 +53,7 @@ interface PendingExtension {
 interface Task {
   id: string;
   title: string;
+  category?: string | null;
   description: string;
   targetName: string;
   store: { name: string };
@@ -138,6 +139,7 @@ type Cadence = 'DAILY' | 'WEEKLY' | 'MONTHLY';
 interface Schedule {
   id: string;
   title: string;
+  category?: string | null;
   targetName: string;
   cadence: Cadence;
   dueHours: number;
@@ -230,6 +232,8 @@ const managed = ref<Task[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<string[]>([]);
 const title = ref('');
+const category = ref('');
+const suggestedCategories = ['巡店任务', '周任务', '月任务', '门店自查'];
 const description = ref('');
 const checklistDrafts = ref<ChecklistItem[]>([]);
 const reviewMode = ref<'REQUIRED' | 'AUTO_COMPLETE'>('AUTO_COMPLETE');
@@ -318,13 +322,13 @@ const selectedStoreKey = computed(() =>
 );
 const ccOptions = computed(() =>
   ccCandidates.value.map((account) => ({
-    value: account.username,
-    label: `${account.displayName} · ${account.username} · ${
+    value: account.value,
+    label: `${account.displayName} · ${
       account.allStores ? '全部门店' : account.stores.join('、')
     }`,
     disabled:
       ccUsernames.value.length >= 5 &&
-      !ccUsernames.value.includes(account.username)
+      !ccUsernames.value.includes(account.value)
   }))
 );
 let ccLoadSequence = 0;
@@ -334,6 +338,7 @@ async function loadCcOptions(storeIds: string) {
   ccCandidates.value = [];
   ccError.value = '';
   if (!storeIds) {
+    ccLoading.value = false;
     ccUsernames.value = [];
     return;
   }
@@ -344,7 +349,7 @@ async function loadCcOptions(storeIds: string) {
     );
     if (sequence !== ccLoadSequence) return;
     ccCandidates.value = rows;
-    const available = new Set(rows.map((item) => item.username));
+    const available = new Set(rows.map((item) => item.value));
     ccUsernames.value = ccUsernames.value.filter((username) =>
       available.has(username)
     );
@@ -409,9 +414,13 @@ async function load(
   canReport.value = data.canReport;
   canReviewExtensions.value = data.canReviewExtensions;
   if (!sectionInitialized.value) {
-    activeSection.value = data.canManage ? 'manage' : 'mine';
+    if (data.canManage && activeSection.value === 'mine')
+      activeSection.value = 'manage';
     sectionInitialized.value = true;
-  } else if (!data.canManage && activeSection.value !== 'mine') {
+  } else if (
+    !data.canManage &&
+    ['manage', 'settings'].includes(activeSection.value)
+  ) {
     activeSection.value = 'mine';
   }
   managementStores.value = data.managementStores;
@@ -419,30 +428,28 @@ async function load(
   hasNextPage.value = data.hasNext;
   appliedFilters.value = { ...filters };
 
-  if (refreshTargets || !data.canReviewExtensions) await loadExtensions();
-
-  if (refreshTargets || !data.canManage) {
+  if (refreshTargets) {
+    const [nextTargets, nextSchedules] = await Promise.all([
+      request<Target[]>(`${base}/targets`),
+      request<Schedule[]>(`${base}/schedules`)
+    ]);
+    targets.value = nextTargets;
+    schedules.value = nextSchedules;
+    const available = new Set(targets.value.map(targetValue));
+    selected.value = selected.value.filter((value) => available.has(value));
     if (data.canManage) {
-      const [nextTargets, nextSchedules, nextGroups, nextStorage] =
-        await Promise.all([
-          request<Target[]>(`${base}/targets`),
-          request<Schedule[]>(`${base}/schedules`),
-          request<ManagementGroupStore[]>(`${base}/management-groups`),
-          request<EvidenceStorage>(`${base}/evidence-storage`)
-        ]);
-      targets.value = nextTargets;
-      schedules.value = nextSchedules;
+      const [nextGroups, nextStorage] = await Promise.all([
+        request<ManagementGroupStore[]>(`${base}/management-groups`),
+        request<EvidenceStorage>(`${base}/evidence-storage`)
+      ]);
       managementGroups.value = nextGroups;
       storage.value = nextStorage;
     } else {
-      targets.value = [];
-      schedules.value = [];
       managementGroups.value = [];
       storage.value = undefined;
     }
-    const available = new Set(targets.value.map(targetValue));
-    selected.value = selected.value.filter((value) => available.has(value));
   }
+  if (refreshTargets || !data.canReviewExtensions) await loadExtensions();
 }
 
 function saveManagementGroup(store: ManagementGroupStore) {
@@ -556,6 +563,7 @@ function dispatch() {
       .filter((target) => selected.value.includes(targetValue(target)))
       .map(({ storeId, targetKey }) => ({ storeId, targetKey }));
     const formTitle = title.value.trim();
+    const formCategory = category.value.trim() || undefined;
     const formCcUsernames = [...new Set(ccUsernames.value)];
     const formDescription = description.value.trim();
     const checklist = checklistDrafts.value
@@ -580,6 +588,7 @@ function dispatch() {
     const payload = isRecurring
       ? {
           title: formTitle,
+          category: formCategory,
           description: formDescription,
           checklist,
           reviewMode: reviewMode.value,
@@ -591,6 +600,7 @@ function dispatch() {
         }
       : {
           title: formTitle,
+          category: formCategory,
           description: formDescription,
           checklist,
           reviewMode: reviewMode.value,
@@ -610,20 +620,21 @@ function dispatch() {
     }
     const id = dispatchAttempt.value.id;
     if (isRecurring) {
-      await request(`${base}/schedules`, {
+      const result = await request<{ count: number }>(`${base}/schedules`, {
         method: 'POST',
         body: JSON.stringify({ ...payload, requestId: id })
       });
-      feedback.value = `已创建 ${formTargets.length} 个循环模板`;
+      feedback.value = `已创建 ${result.count} 个循环任务模板`;
     } else {
       const result = await request<{ count: number }>(`${base}/dispatch`, {
         method: 'POST',
         body: JSON.stringify({ ...payload, batchId: id })
       });
-      feedback.value = `已派发 ${result.count} 项门店岗位任务`;
+      feedback.value = `已发布 ${result.count} 项任务`;
     }
     dispatchAttempt.value = undefined;
     title.value = '';
+    category.value = '';
     description.value = '';
     checklistDrafts.value = [];
     reviewMode.value = 'AUTO_COMPLETE';
@@ -646,6 +657,19 @@ function toggleSchedule(schedule: Schedule) {
     );
     schedules.value = await request<Schedule[]>(`${base}/schedules`);
     feedback.value = schedule.enabled ? '已暂停循环派发' : '已恢复循环派发';
+  });
+}
+
+function archiveSchedule(schedule: Schedule) {
+  return run(async () => {
+    await request(
+      `${base}/schedules/${encodeURIComponent(schedule.id)}/archive`,
+      {
+        method: 'POST'
+      }
+    );
+    schedules.value = schedules.value.filter(({ id }) => id !== schedule.id);
+    feedback.value = '已移除循环模板，已发布的任务仍保留';
   });
 }
 
@@ -799,6 +823,7 @@ function startRectification(task: Task, index?: number) {
   checklistDrafts.value = [];
   ccUsernames.value = [];
   title.value = `整改 · ${task.title}`.slice(0, 120);
+  category.value = task.category ?? '';
   description.value =
     index === undefined
       ? ''
@@ -808,7 +833,7 @@ function startRectification(task: Task, index?: number) {
   due.value = '';
   selected.value = [];
   errorMessage.value = '';
-  document.getElementById('task-dispatch')?.scrollIntoView({ block: 'start' });
+  activeSection.value = 'dispatch';
 }
 
 function openReopen(task: Task) {
@@ -902,18 +927,16 @@ onUnmounted(() => {
         </p>
       </div>
       <n-space align="center">
+        <n-button type="primary" @click="activeSection = 'dispatch'">
+          发布任务
+        </n-button>
         <n-badge :value="inbox.unread" :max="99">
           <n-button @click="inboxOpen = true">任务消息</n-button>
         </n-badge>
         <RouterLink v-if="canReport" to="/v2/operational-tasks/report">
           <n-button>统计与导出</n-button>
         </RouterLink>
-        <n-button
-          type="primary"
-          :loading="busy"
-          :disabled="busy"
-          @click="refresh"
-        >
+        <n-button :loading="busy" :disabled="busy" @click="refresh">
           刷新数据
         </n-button>
       </n-space>
@@ -967,9 +990,9 @@ onUnmounted(() => {
     <n-card size="small" class="workspace-nav">
       <n-tabs v-model:value="activeSection" type="segment" animated>
         <n-tab-pane name="mine" tab="我的任务" />
-        <n-tab-pane v-if="canManage" name="dispatch" tab="派发任务" />
+        <n-tab-pane name="dispatch" tab="任务发布" />
         <n-tab-pane v-if="canManage" name="manage" tab="任务管理" />
-        <n-tab-pane v-if="canManage" name="automation" tab="循环任务" />
+        <n-tab-pane name="automation" tab="循环任务" />
         <n-tab-pane v-if="canManage" name="settings" tab="任务配置" />
       </n-tabs>
     </n-card>
@@ -1085,10 +1108,9 @@ onUnmounted(() => {
     </n-card>
 
     <n-card
-      v-if="canManage"
       v-show="activeSection === 'dispatch'"
       id="task-dispatch"
-      :title="sourceTask ? '派发整改' : '派发任务'"
+      :title="sourceTask ? '派发整改' : '发布任务'"
     >
       <n-space v-if="sourceTask" class="mb-3" align="center">
         <span
@@ -1111,6 +1133,24 @@ onUnmounted(() => {
         >
       </n-space>
       <form class="space-y-3" @submit.prevent="dispatch">
+        <label class="block">
+          任务类型（选填）
+          <input
+            v-model="category"
+            list="task-category-suggestions"
+            maxlength="40"
+            class="task-category-input"
+            placeholder="选择或输入任务类型"
+            :disabled="busy"
+          />
+          <datalist id="task-category-suggestions">
+            <option
+              v-for="suggestion in suggestedCategories"
+              :key="suggestion"
+              :value="suggestion"
+            />
+          </datalist>
+        </label>
         <n-input
           v-model:value="title"
           maxlength="120"
@@ -1224,21 +1264,38 @@ onUnmounted(() => {
           每个所选目标生成一个循环模板。每月日期不足时，安排在当月最后一天。
         </p>
         <p v-else-if="selected.length > 50">每批最多派发 50 项任务</p>
+        <p v-if="selected.length" aria-live="polite">
+          已选 {{ selectedStoreKey.split(',').length }} 家门店、{{
+            selected.length
+          }}
+          个执行组， 将{{ recurring ? '创建' : '发布' }} {{ selected.length }}
+          {{ recurring ? '个循环模板' : '项任务' }}。
+          <template v-if="ccUsernames.length"
+            >提交结果时将抄送 {{ ccUsernames.length }} 人。</template
+          >
+        </p>
         <n-button
           attr-type="submit"
           type="primary"
           :disabled="
             busy ||
-            (recurring ? !selected.length || !dueHours : selected.length > 50)
+            ccLoading ||
+            !title.trim() ||
+            !description.trim() ||
+            !due ||
+            !selected.length ||
+            selected.length > 50 ||
+            (recurring && !dueHours)
           "
         >
-          {{ recurring ? '创建循环模板' : '派发' }}
+          {{
+            recurring ? '创建循环任务' : sourceTask ? '发布整改' : '立即发布'
+          }}
         </n-button>
       </form>
     </n-card>
 
     <n-card
-      v-if="canManage"
       v-show="activeSection === 'automation'"
       title="循环模板（最近 100 项）"
     >
@@ -1249,7 +1306,10 @@ onUnmounted(() => {
         class="border-b py-3"
       >
         <p class="font-semibold">
-          {{ schedule.title }} · {{ cadenceLabels[schedule.cadence] }} ·
+          {{ schedule.title }} ·
+          <template v-if="schedule.category"
+            >{{ schedule.category }} · </template
+          >{{ cadenceLabels[schedule.cadence] }} ·
           {{ schedule.enabled ? '启用' : '已暂停' }}
         </p>
         <p>
@@ -1267,6 +1327,12 @@ onUnmounted(() => {
         >
           {{ schedule.enabled ? '暂停' : '恢复' }}
         </n-button>
+        <n-popconfirm @positive-click="archiveSchedule(schedule)">
+          <template #trigger>
+            <n-button class="ml-2" size="small" :disabled="busy">移除</n-button>
+          </template>
+          移除后停止后续派发，已发布的任务会保留。
+        </n-popconfirm>
       </div>
     </n-card>
 
@@ -1302,8 +1368,9 @@ onUnmounted(() => {
       <p v-if="!assigned.length">当前页暂无任务</p>
       <div v-for="task in assigned" :key="task.id" class="border-b py-3">
         <p class="font-semibold">
-          {{ task.title }} · {{ task.sourceTaskId ? '整改 · ' : ''
-          }}{{ statusText(task) }}
+          {{ task.title }} ·
+          <template v-if="task.category">{{ task.category }} · </template
+          >{{ task.sourceTaskId ? '整改 · ' : '' }}{{ statusText(task) }}
         </p>
         <p>
           {{ task.store.name }} · {{ task.targetName }} · 截止
@@ -1453,8 +1520,9 @@ onUnmounted(() => {
       <p v-if="!managed.length && !busy">当前页暂无符合条件的任务</p>
       <div v-for="task in managed" :key="task.id" class="border-b py-3">
         <p class="font-semibold">
-          {{ task.title }} · {{ task.sourceTaskId ? '整改 · ' : ''
-          }}{{ statusText(task) }}
+          {{ task.title }} ·
+          <template v-if="task.category">{{ task.category }} · </template
+          >{{ task.sourceTaskId ? '整改 · ' : '' }}{{ statusText(task) }}
         </p>
         <p>
           {{ task.store.name }} · {{ task.targetName }} · 截止
@@ -1868,6 +1936,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.task-category-input {
+  display: block;
+  width: min(100%, 320px);
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--task-border);
+  border-radius: 4px;
+}
+
 .task-workspace {
   --task-border: #e3e9f1;
   --task-muted: #64748b;
