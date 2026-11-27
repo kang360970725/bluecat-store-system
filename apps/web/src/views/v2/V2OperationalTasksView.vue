@@ -53,6 +53,7 @@ interface PendingExtension {
 interface Task {
   id: string;
   title: string;
+  referenceImageCount?: number;
   category?: string | null;
   description: string;
   targetName: string;
@@ -232,6 +233,9 @@ const managed = ref<Task[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<string[]>([]);
 const title = ref('');
+const referenceFiles = ref<File[]>([]);
+const referenceInput = ref<HTMLInputElement>();
+const referenceError = ref('');
 const category = ref('');
 const suggestedCategories = ['巡店任务', '周任务', '月任务', '门店自查'];
 const description = ref('');
@@ -555,7 +559,7 @@ function dispatch() {
     !title.value.trim() ||
     !description.value.trim() ||
     !due.value ||
-    !selected.value.length
+    !selected.value.length || referenceError.value
   )
     return;
   void run(async () => {
@@ -614,26 +618,24 @@ function dispatch() {
               : undefined,
           targets: formTargets
         };
-    const signature = JSON.stringify(payload);
+    const signature = JSON.stringify({
+      payload,
+      references: referenceFiles.value.map((file) => [file.name, file.size, file.lastModified])
+    });
     if (dispatchAttempt.value?.signature !== signature) {
       dispatchAttempt.value = { signature, id: browserUuid() };
     }
     const id = dispatchAttempt.value.id;
     if (isRecurring) {
-      const result = await request<{ count: number }>(`${base}/schedules`, {
-        method: 'POST',
-        body: JSON.stringify({ ...payload, requestId: id })
-      });
+      const result = await submitPublish('schedules', { ...payload, requestId: id });
       feedback.value = `已创建 ${result.count} 个循环任务模板`;
     } else {
-      const result = await request<{ count: number }>(`${base}/dispatch`, {
-        method: 'POST',
-        body: JSON.stringify({ ...payload, batchId: id })
-      });
+      const result = await submitPublish('dispatch', { ...payload, batchId: id });
       feedback.value = `已发布 ${result.count} 项任务`;
     }
     dispatchAttempt.value = undefined;
     title.value = '';
+    clearReferences();
     category.value = '';
     description.value = '';
     checklistDrafts.value = [];
@@ -643,6 +645,39 @@ function dispatch() {
     selected.value = [];
     sourceTask.value = undefined;
     await load(1, appliedFilters.value, isRecurring);
+  });
+}
+
+function clearReferences() {
+  referenceFiles.value = [];
+  referenceError.value = '';
+  if (referenceInput.value) referenceInput.value.value = '';
+}
+
+function chooseReferences(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  dispatchAttempt.value = undefined;
+  if (files.length > 3 || files.some((file) => file.size > 5 * 1024 * 1024)) {
+    clearReferences();
+    referenceError.value = '最多选择 3 张图片，单张不超过 5 MB';
+    return;
+  }
+  referenceError.value = '';
+  referenceFiles.value = files;
+}
+
+function submitPublish(endpoint: 'schedules' | 'dispatch', payload: object) {
+  if (!referenceFiles.value.length) {
+    return request<{ count: number }>(`${base}/${endpoint}`, {
+      method: 'POST', body: JSON.stringify(payload)
+    });
+  }
+  const form = new FormData();
+  form.set('payload', JSON.stringify(payload));
+  for (const file of referenceFiles.value) form.append('references', file);
+  return request<{ count: number }>(`${base}/${endpoint}-with-references`, {
+    method: 'POST', body: form
   });
 }
 
@@ -722,14 +757,14 @@ function closePreview() {
   previewUrl.value = '';
 }
 
-async function openPhoto(taskId: string, evidenceId: string) {
+async function openPhoto(taskId: string, evidenceId: string | number) {
   closePreview();
   errorMessage.value = '';
   const controller = new AbortController();
   previewRequest = controller;
   try {
     const response = await fetch(
-      `${API_BASE_URL}${base}/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(evidenceId)}`,
+      `${API_BASE_URL}${base}/${encodeURIComponent(taskId)}/${typeof evidenceId === 'number' ? 'references' : 'evidence'}/${encodeURIComponent(evidenceId)}`,
       {
         headers: { Authorization: `Bearer ${auth.accessToken}` },
         cache: 'no-store',
@@ -816,6 +851,7 @@ function act(task: Task, action: 'claim' | 'submit' | 'complete') {
 }
 
 function startRectification(task: Task, index?: number) {
+  clearReferences();
   sourceItemIndex.value = index;
   sourceTask.value = task;
   cadence.value = 'ONCE';
@@ -1164,6 +1200,15 @@ onUnmounted(() => {
           placeholder="任务说明"
           :disabled="busy"
         />
+        <label class="block">
+          参考图片（选填，最多 3 张，单张不超过 5 MB）
+          <input ref="referenceInput" type="file" class="block mt-1" multiple
+            accept="image/jpeg,image/png,image/webp" :disabled="busy" @change="chooseReferences" />
+        </label>
+        <n-button v-if="referenceFiles.length || referenceError" size="small" :disabled="busy" @click="clearReferences">
+          清空图片
+        </n-button>
+        <n-alert v-if="referenceError" type="error">{{ referenceError }}</n-alert>
         <strong>检查清单（选填）</strong>
         <div
           v-for="(item, index) in checklistDrafts"
@@ -1279,7 +1324,7 @@ onUnmounted(() => {
           type="primary"
           :disabled="
             busy ||
-            ccLoading ||
+            ccLoading || Boolean(referenceError) ||
             !title.trim() ||
             !description.trim() ||
             !due ||
@@ -1400,7 +1445,9 @@ onUnmounted(() => {
         <p v-if="task.submission" class="whitespace-pre-wrap break-words">
           完成说明：{{ task.submission }}
         </p>
-        <n-space v-if="task.evidence.length" class="my-2">
+        <n-space v-if="task.referenceImageCount || task.evidence.length" class="my-2">
+          <n-button v-for="number in task.referenceImageCount ?? 0" :key="'reference-' + number"
+            size="small" @click="openPhoto(task.id, number - 1)">参考图 {{ number }}</n-button>
           <n-button
             v-for="(photo, index) in task.evidence"
             :key="photo.id"
@@ -1563,7 +1610,9 @@ onUnmounted(() => {
         <p v-if="task.submission" class="whitespace-pre-wrap break-words">
           完成说明：{{ task.submission }}
         </p>
-        <n-space v-if="task.evidence.length" class="my-2">
+        <n-space v-if="task.referenceImageCount || task.evidence.length" class="my-2">
+          <n-button v-for="number in task.referenceImageCount ?? 0" :key="'reference-' + number"
+            size="small" @click="openPhoto(task.id, number - 1)">参考图 {{ number }}</n-button>
           <n-button
             v-for="(photo, index) in task.evidence"
             :key="photo.id"

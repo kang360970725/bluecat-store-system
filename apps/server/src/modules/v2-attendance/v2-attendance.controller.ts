@@ -38,6 +38,11 @@ class WechatDto {
   wechatCode!: string;
 }
 
+class TaskSubscriptionDto extends WechatDto {
+  @Matches(/^[\w-]{1,128}$/)
+  templateId!: string;
+}
+
 class BindDto extends WechatDto {
   @IsString()
   @Length(1, 128)
@@ -211,6 +216,19 @@ export class V2AttendanceController {
   @Header('Cache-Control', 'no-store')
   openWechatSession(@Body() body: WechatDto) {
     return this.attendance.openWechatSession(body.wechatCode);
+  }
+
+  @Get('wechat/task-subscription')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  taskSubscription(@CurrentUserInfo() user: CurrentUser) {
+    return this.attendance.taskSubscription(user.id);
+  }
+
+  @Post('wechat/task-subscription')
+  @UseGuards(JwtAuthGuard)
+  subscribeToTask(@CurrentUserInfo() user: CurrentUser, @Body() body: TaskSubscriptionDto) {
+    return this.attendance.subscribeToTask(user.id, body.wechatCode, body.templateId);
   }
 
   @Post('wechat/assignments')

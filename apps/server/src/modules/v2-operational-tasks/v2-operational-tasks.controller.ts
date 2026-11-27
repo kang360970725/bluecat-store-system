@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -15,7 +16,7 @@ import {
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import type { CurrentUser } from '@bluecat/shared';
-import { Type } from 'class-transformer';
+import { Transform, Type, plainToInstance } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -36,7 +37,7 @@ import {
 import { CurrentUserInfo } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { TaskReportQuery } from './task-report';
-import { maxEvidenceFiles, maxEvidenceFileSize } from './task-evidence';
+import { maxEvidenceFiles, maxEvidenceFileSize, maxTaskReferenceImages } from './task-evidence';
 import {
   V2OperationalTasksService,
   type TaskListFilters
@@ -188,6 +189,16 @@ class DispatchDto {
   targets!: TargetDto[];
 }
 
+function parseTaskForm<T extends object>(value: unknown, dto: new () => T) {
+  try {
+    const payload: unknown = JSON.parse(typeof value === 'string' ? value : '');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error();
+    return plainToInstance(dto, payload);
+  } catch {
+    throw new BadRequestException('任务表单无效');
+  }
+}
+
 class ScheduleDto {
   @IsOptional()
   @IsString()
@@ -242,6 +253,24 @@ class ScheduleDto {
   @Max(168)
   dueHours!: number;
 }
+
+class DispatchImagesDto {
+  @Transform(({ value }) => parseTaskForm(value, DispatchDto))
+  @ValidateNested()
+  @IsOptional()
+  payload?: DispatchDto;
+}
+
+class ScheduleImagesDto {
+  @Transform(({ value }) => parseTaskForm(value, ScheduleDto))
+  @ValidateNested()
+  @IsOptional()
+  payload?: ScheduleDto;
+}
+
+const referenceUploadLimits = {
+  limits: { fileSize: maxEvidenceFileSize, fields: 1, fieldSize: 64 * 1024 }
+};
 
 class ScheduleEnabledDto {
   @IsBoolean()
@@ -486,6 +515,46 @@ export class V2OperationalTasksController {
   @Post('schedules/:id/archive')
   archiveSchedule(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
     return this.tasks.setScheduleEnabled(user.id, id, false, true);
+  }
+
+  @Post('dispatch-with-references')
+  @UseInterceptors(FilesInterceptor('references', maxTaskReferenceImages, referenceUploadLimits))
+  dispatchWithReferences(
+    @CurrentUserInfo() user: CurrentUser,
+    @Body() body: DispatchImagesDto,
+    @UploadedFiles() files?: Array<{ buffer: Buffer }>
+  ) {
+    if (!body.payload) throw new BadRequestException('缺少任务表单');
+    return this.tasks.dispatchWithReferences(user.id, body.payload, files?.map(({ buffer }) => buffer) ?? []);
+  }
+
+  @Post('schedules-with-references')
+  @UseInterceptors(FilesInterceptor('references', maxTaskReferenceImages, referenceUploadLimits))
+  scheduleWithReferences(
+    @CurrentUserInfo() user: CurrentUser,
+    @Body() body: ScheduleImagesDto,
+    @UploadedFiles() files?: Array<{ buffer: Buffer }>
+  ) {
+    if (!body.payload) throw new BadRequestException('缺少任务表单');
+    return this.tasks.scheduleWithReferences(user.id, body.payload, files?.map(({ buffer }) => buffer) ?? []);
+  }
+
+  @Get(':id/references/:index')
+  async referenceImage(
+    @CurrentUserInfo() user: CurrentUser,
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @Res() response: Response
+  ) {
+    const image = await this.tasks.referenceImage(user.id, id, Number(index));
+    response.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    response.type('image/jpeg').send(Buffer.from(image));
+  }
+
+  @Get(':id/assigned-detail')
+  @Header('Cache-Control', 'no-store')
+  assignedDetail(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
+    return this.tasks.assignedDetail(user.id, id);
   }
 
   @Post(':id/claim')

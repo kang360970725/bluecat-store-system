@@ -25,16 +25,36 @@ import {
 import { nextTaskRun } from './task-schedule';
 import {
   encodeTaskEvidence,
+  maxEvidenceFileSize,
+  maxTaskReferenceImages,
   maxEncodedEvidenceTotalSize,
   maxLegacyEvidenceFiles,
   maxRawEvidenceTotalSize
 } from './task-evidence';
 import { PrismaService } from '../../database/prisma.service';
 import { TaskEvidenceObjectStorage } from './task-evidence-storage';
+import { V2AttendanceService } from '../v2-attendance/v2-attendance.service';
 
 const operating = { status: 'OPERATING', deletedAt: null } as const;
 const activePosition = { enabled: true, deletedAt: null } as const;
 const activeEmployee = { status: 'ACTIVE', deletedAt: null } as const;
+type ReferenceImage = { objectKey: string; checksumSha256: string };
+
+function taskReferences(value: Prisma.JsonValue | null): ReferenceImage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const image = jsonObject(item);
+    return typeof image.objectKey === 'string' && typeof image.checksumSha256 === 'string'
+      ? [{ objectKey: image.objectKey, checksumSha256: image.checksumSha256 }]
+      : [];
+  });
+}
+
+function sameTaskReferences(value: Prisma.JsonValue | null, references: ReferenceImage[]) {
+  const saved = taskReferences(value);
+  return saved.length === references.length &&
+    saved.every((image, index) => image.checksumSha256 === references[index]?.checksumSha256);
+}
 
 const currentEvidence = {
   where: { reopenId: null },
@@ -197,11 +217,13 @@ export class V2OperationalTasksService
   private scheduleTimer?: ReturnType<typeof setInterval>;
   private draftCleanupTimer?: ReturnType<typeof setInterval>;
   private processingSchedules = false;
+  private processingWechat = false;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly objectStorage: TaskEvidenceObjectStorage
+    private readonly objectStorage: TaskEvidenceObjectStorage,
+    private readonly wechat: V2AttendanceService
   ) {}
 
   onModuleInit() {
@@ -213,11 +235,11 @@ export class V2OperationalTasksService
     void this.cleanupEvidenceDrafts();
     if (!this.config.get<boolean>('app.backgroundJobsEnabled')) return;
     this.scheduleTimer = setInterval(
-      () => void this.processSchedules(),
+      () => void this.processBackgroundDispatch(),
       30_000
     );
     this.scheduleTimer.unref();
-    void this.processSchedules();
+    void this.processBackgroundDispatch();
   }
 
   onModuleDestroy() {
@@ -420,7 +442,7 @@ export class V2OperationalTasksService
               assignedStatus
             ]
           },
-          omit: { ccRecipients: true },
+          omit: { ccRecipients: true, referenceImages: true, wechatPending: true },
           include: {
             store: { select: { name: true } },
             evidence: currentEvidence,
@@ -489,6 +511,7 @@ export class V2OperationalTasksService
             ? { contains: keyword.replace(/[\\%_]/g, '\\$&') }
             : undefined
         },
+        omit: { referenceImages: true, wechatPending: true },
         include: {
           store: { select: { name: true } },
           evidence: currentEvidence,
@@ -965,7 +988,7 @@ export class V2OperationalTasksService
     });
   }
 
-  async createSchedule(accountId: string, input: ScheduleInput) {
+  async createSchedule(accountId: string, input: ScheduleInput, references: ReferenceImage[] = []) {
     const category = input.category?.trim() || null;
     const title = input.title.trim();
     const description = input.description.trim();
@@ -989,6 +1012,7 @@ export class V2OperationalTasksService
               requested.has(this.targetId(schedule)) &&
               schedule.title === title &&
               schedule.category === category &&
+              sameTaskReferences(schedule.referenceImages, references) &&
               schedule.description === description &&
               JSON.stringify(schedule.checklist ?? []) === JSON.stringify(checklist) &&
               schedule.reviewMode === (input.reviewMode ?? 'REQUIRED') &&
@@ -1000,7 +1024,7 @@ export class V2OperationalTasksService
         if (!same) {
           throw new ConflictException('循环模板请求已使用，请重新发起');
         }
-        return { count: existing.length };
+        return { count: existing.length, ...(references.length ? { reused: true } : {}) };
       }
       if (firstRunAt.getTime() <= Date.now())
         throw new BadRequestException('首次派发时间必须晚于当前时间');
@@ -1026,6 +1050,7 @@ export class V2OperationalTasksService
           targetName: target.targetName,
           title,
           category,
+          referenceImages: references.length ? references : undefined,
           description,
           checklist,
           ccRecipients,
@@ -1121,6 +1146,105 @@ export class V2OperationalTasksService
     }
   }
 
+  private async processBackgroundDispatch() {
+    await this.processSchedules();
+    await this.processWechatDispatch();
+  }
+
+  private async processWechatDispatch() {
+    if (this.processingWechat) return;
+    this.processingWechat = true;
+    try {
+      const now = new Date();
+      const recent = new Date(now.getTime() - 86_400_000);
+      await this.prisma.v2OperationalTask.updateMany({
+        where: { wechatPending: true, OR: [
+          { dueAt: { lte: now } }, { createdAt: { lt: recent } }, { status: { not: 'PENDING' } }
+        ] },
+        data: { wechatPending: false }
+      });
+      const template = await this.wechat.taskWechatTemplate();
+      if (!template) return;
+      const pending = await this.prisma.v2OperationalTask.findMany({
+        where: { wechatPending: true, dueAt: { gt: now }, status: 'PENDING' },
+        select: { id: true, title: true, dueAt: true, createdAt: true, storeId: true, targetKey: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: 25
+      });
+      if (!pending.length) return;
+      const bindings = await this.prisma.v2AttendanceWechatBinding.findMany({
+        where: {
+          taskSubscriptionKey: template.key,
+          taskSubscribedAt: { lte: now },
+          taskOpenIdCipher: { not: null },
+          account: {
+            status: 'ACTIVE', deletedAt: null, mustChangePassword: false,
+            employee: activeEmployee
+          }
+        },
+        select: { accountId: true, taskSubscribedAt: true, taskOpenIdCipher: true,
+          account: { select: { employeeId: true } } }
+      });
+      const recipients = [];
+      for (const binding of bindings) {
+        if (!binding.account.employeeId || !binding.taskSubscribedAt || !binding.taskOpenIdCipher)
+          continue;
+        const targets = await this.targets(binding.account.employeeId);
+        recipients.push({
+          accountId: binding.accountId, subscribedAt: binding.taskSubscribedAt,
+          employeeId: binding.account.employeeId,
+          openIdCipher: binding.taskOpenIdCipher,
+          targets: new Set(targets.map((target) => this.targetId(target)))
+        });
+      }
+      for (const task of pending) {
+        const eligible = recipients.filter((recipient) =>
+          recipient.subscribedAt <= task.createdAt && recipient.targets.has(this.targetId(task)));
+        if (eligible.length) {
+          const token = await this.wechat.taskWechatAccessToken(template.appid);
+          for (const recipient of eligible) {
+            const reserved = await this.write(async (tx) => {
+              const active = await tx.v2OperationalTask.findFirst({
+                where: { id: task.id, wechatPending: true, status: 'PENDING', dueAt: { gt: new Date() } },
+                select: { id: true }
+              });
+              if (!active) return false;
+              const liveTargets = await this.targets(recipient.employeeId, tx, task.storeId);
+              if (!liveTargets.some((target) => target.targetKey === task.targetKey))
+                return false;
+              const used = await tx.v2AttendanceWechatBinding.updateMany({
+                where: {
+                  accountId: recipient.accountId, taskSubscriptionKey: template.key,
+                  taskSubscribedAt: recipient.subscribedAt,
+                  account: {
+                    employeeId: recipient.employeeId, status: 'ACTIVE', deletedAt: null,
+                    mustChangePassword: false, employee: activeEmployee
+                  }
+                },
+                data: { taskSubscribedAt: null, taskOpenIdCipher: null }
+              });
+              return used.count === 1;
+            });
+            if (!reserved) continue;
+            try {
+              await this.wechat.sendTaskWechatMessage(token, recipient.openIdCipher, template, task);
+            } catch {
+              this.logger.warn(`微信任务提醒未确认送达（任务 ${task.id}）`);
+            }
+          }
+        }
+        await this.prisma.v2OperationalTask.updateMany({
+          where: { id: task.id, wechatPending: true },
+          data: { wechatPending: false }
+        });
+      }
+    } catch {
+      this.logger.warn('微信任务提醒处理暂不可用');
+    } finally {
+      this.processingWechat = false;
+    }
+  }
+
   private async runSchedule(id: string) {
     return this.write(async (tx) => {
       const now = new Date();
@@ -1171,6 +1295,9 @@ export class V2OperationalTasksService
           targetName: target.targetName,
           title: schedule.title,
           category: schedule.category,
+          referenceImages: taskReferences(schedule.referenceImages),
+          referenceImageCount: taskReferences(schedule.referenceImages).length,
+          wechatPending: true,
           description: schedule.description,
           ccRecipients: savedCc(schedule.ccRecipients),
           checklist: Array.isArray(schedule.checklist)
@@ -1396,7 +1523,7 @@ export class V2OperationalTasksService
     });
   }
 
-  async dispatch(accountId: string, input: DispatchInput) {
+  async dispatch(accountId: string, input: DispatchInput, references: ReferenceImage[] = []) {
     const category = input.category?.trim() || null;
     const title = input.title.trim();
     const description = input.description.trim();
@@ -1445,6 +1572,7 @@ export class V2OperationalTasksService
           targetKey: true,
           title: true,
           category: true,
+          referenceImages: true,
           description: true,
           checklist: true,
           reviewMode: true,
@@ -1463,6 +1591,7 @@ export class V2OperationalTasksService
               requested.has(this.targetId(task)) &&
               task.title === title &&
               task.category === category &&
+              sameTaskReferences(task.referenceImages, references) &&
               task.description === description &&
               JSON.stringify(task.checklist ?? []) ===
                 JSON.stringify(checklist) &&
@@ -1478,7 +1607,7 @@ export class V2OperationalTasksService
           );
         if (!sameBatch)
           throw new ConflictException('此派发批次已使用，请重新发起');
-        return { count: previous.length };
+        return { count: previous.length, ...(references.length ? { reused: true } : {}) };
       }
       let sourceIssue:
         | { index: number; label: string; reason: string; submittedAt: string }
@@ -1555,6 +1684,9 @@ export class V2OperationalTasksService
           sourceIssue,
           title,
           category,
+          referenceImages: references.length ? references : undefined,
+          referenceImageCount: references.length,
+          wechatPending: true,
           description,
           checklist,
           reviewMode: input.reviewMode ?? 'REQUIRED',
@@ -1591,6 +1723,78 @@ export class V2OperationalTasksService
         throw new ConflictException('任务已被认领或已截止，请刷新待办');
       return { status: 'CLAIMED' };
     });
+  }
+
+  async dispatchWithReferences(accountId: string, input: DispatchInput, files: Buffer[]) {
+    await this.account(accountId);
+    if (input.sourceTaskId) await this.manageAccess(accountId, this.prisma);
+    return this.withReferenceImages(files, (images) => this.dispatch(accountId, input, images));
+  }
+
+  async scheduleWithReferences(accountId: string, input: ScheduleInput, files: Buffer[]) {
+    await this.account(accountId);
+    return this.withReferenceImages(files, (images) => this.createSchedule(accountId, input, images));
+  }
+
+  private async withReferenceImages(
+    files: Buffer[],
+    publish: (images: ReferenceImage[]) => Promise<{ count: number; reused?: boolean }>
+  ) {
+    if (files.length > maxTaskReferenceImages || files.some((file) => file.length > maxEvidenceFileSize))
+      throw new BadRequestException('参考图片最多三张，单张不超过 5 MB');
+    const references: ReferenceImage[] = [];
+    let retained = false;
+    try {
+      for (const file of files) {
+        const encoded = await encodeTaskEvidence(file);
+        const { objectKey, checksumSha256 } = await this.objectStorage.put(encoded.image);
+        references.push({ objectKey, checksumSha256 });
+      }
+      const result = await publish(references);
+      retained = !result.reused;
+      return { count: result.count };
+    } finally {
+      if (!retained) {
+        const cleanup = await Promise.allSettled(
+          references.map((image) => this.objectStorage.delete(image.objectKey))
+        );
+        if (cleanup.some(({ status }) => status === 'rejected'))
+          this.logger.warn('清理未发布参考图片失败');
+      }
+    }
+  }
+
+  async referenceImage(accountId: string, taskId: string, index: number) {
+    const access = await resolveScopedPermission(accountId, 'operational-task:manage', this.prisma);
+    const task = await this.prisma.v2OperationalTask.findFirst({
+      where: { id: taskId, store: { deletedAt: null } },
+      select: { createdBy: true, storeId: true, referenceImages: true }
+    });
+    if (!task) throw new ForbiddenException('照片不存在或无权查看');
+    if (
+      task.createdBy !== accountId &&
+      !(access && (!access.storeIds || access.storeIds.includes(task.storeId)))
+    ) {
+      await this.employeeTask(this.prisma, accountId, taskId);
+    } else {
+      await this.account(accountId);
+    }
+    const photo = Number.isInteger(index) && index >= 0 ? taskReferences(task.referenceImages)[index] : undefined;
+    if (!photo) throw new ForbiddenException('照片不存在或无权查看');
+    return this.objectStorage.get(photo.objectKey, photo.checksumSha256);
+  }
+
+  async assignedDetail(accountId: string, taskId: string) {
+    const { task, employeeId } = await this.employeeTask(this.prisma, accountId, taskId);
+    if (task.status !== 'PENDING' && task.claimerId !== employeeId)
+      throw new ForbiddenException('任务已由同组员工处理');
+    const store = await this.prisma.v2Store.findUniqueOrThrow({
+      where: { id: task.storeId }, select: { name: true }
+    });
+    const { id, title, description, dueAt, status, checklist, submission, sourceTaskId,
+      referenceImageCount } = task;
+    return { id, title, description, dueAt, status, checklist, submission, sourceTaskId,
+      referenceImageCount, store };
   }
 
   async evidence(accountId: string, taskId: string, evidenceId: string) {

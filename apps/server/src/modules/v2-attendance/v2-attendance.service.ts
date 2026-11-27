@@ -56,6 +56,7 @@ const attendanceRecordSelect = {
 
 @Injectable()
 export class V2AttendanceService {
+  private taskToken?: { appId: string; token: string; expiresAt: number };
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -875,7 +876,7 @@ export class V2AttendanceService {
       throw new ForbiddenException('仅超级管理员可管理考勤试点');
   }
 
-  private async wechatSubject(code: string) {
+  private async wechatCredentials() {
     const settings = await this.prisma.v2AttendanceSettings.findUnique({
       where: { id: 1 }
     });
@@ -886,6 +887,107 @@ export class V2AttendanceService {
       : this.config.get<string>('ATTENDANCE_WECHAT_APP_SECRET');
     if (!appid || !secret)
       throw new ServiceUnavailableException('员工小程序尚未配置');
+    return { appid, secret };
+  }
+
+  async taskWechatTemplate() {
+    const templateId = this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim();
+    const titleField = this.config.get<string>('TASK_WECHAT_TITLE_FIELD')?.trim();
+    const timeField = this.config.get<string>('TASK_WECHAT_TIME_FIELD')?.trim();
+    if (!templateId || !/^[\w-]{1,128}$/.test(templateId) ||
+        !titleField || !/^thing\d+$/.test(titleField) ||
+        !timeField || !/^time\d+$/.test(timeField)) return null;
+    const { appid } = await this.wechatCredentials();
+    return { appid, templateId, titleField, timeField, key: digest(`${appid}:${templateId}`) };
+  }
+
+  async taskSubscription(accountId: string) {
+    const template = await this.taskWechatTemplate();
+    if (!template) return { templateId: null, subscribed: false };
+    const binding = await this.prisma.v2AttendanceWechatBinding.findUnique({
+      where: { accountId },
+      select: { taskSubscribedAt: true, taskSubscriptionKey: true }
+    });
+    return {
+      templateId: binding ? template.templateId : null,
+      subscribed: Boolean(binding?.taskSubscribedAt && binding.taskSubscriptionKey === template.key)
+    };
+  }
+
+  async subscribeToTask(accountId: string, code: string, templateId: string) {
+    const template = await this.taskWechatTemplate();
+    if (!template || template.templateId !== templateId)
+      throw new ConflictException('任务提醒模板已更新，请刷新后重试');
+    const { appid, openid, subject } = await this.wechatIdentity(code);
+    if (appid !== template.appid) throw new ConflictException('小程序配置已更新，请重试');
+    const result = await this.prisma.v2AttendanceWechatBinding.updateMany({
+      where: { accountId, subject },
+      data: {
+        taskOpenIdCipher: this.encryptSetting(openid),
+        taskSubscribedAt: new Date(),
+        taskSubscriptionKey: template.key
+      }
+    });
+    if (!result.count) throw new ForbiddenException('当前微信与员工账号绑定不一致');
+    return { subscribed: true };
+  }
+
+  async taskWechatAccessToken(expectedAppId: string) {
+    const { appid, secret } = await this.wechatCredentials();
+    if (appid !== expectedAppId) throw new Error('WeChat app configuration changed');
+    if (this.taskToken?.appId === appid && this.taskToken.expiresAt > Date.now())
+      return this.taskToken.token;
+    const response = await fetch('https://api.weixin.qq.com/cgi-bin/stable_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'client_credential', appid, secret }),
+      signal: AbortSignal.timeout(5_000)
+    });
+    const result = (await response.json()) as { access_token?: string; expires_in?: number };
+    if (!response.ok || !result.access_token || !result.expires_in)
+      throw new Error('WeChat access token unavailable');
+    this.taskToken = {
+      appId: appid, token: result.access_token,
+      expiresAt: Date.now() + Math.max(0, result.expires_in - 120) * 1000
+    };
+    return this.taskToken.token;
+  }
+
+  async sendTaskWechatMessage(
+    token: string, openIdCipher: string,
+    template: NonNullable<Awaited<ReturnType<V2AttendanceService['taskWechatTemplate']>>>,
+    task: { id: string; title: string; dueAt: Date }
+  ) {
+    const state = this.config.get<string>('TASK_WECHAT_MINIPROGRAM_STATE');
+    const url = new URL('https://api.weixin.qq.com/cgi-bin/message/subscribe/send');
+    url.searchParams.set('access_token', token);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        touser: this.decryptSetting(openIdCipher),
+        template_id: template.templateId,
+        page: `tasks/index/index?taskId=${encodeURIComponent(task.id)}`,
+        miniprogram_state: state === 'trial' || state === 'developer' ? state : 'formal',
+        lang: 'zh_CN',
+        data: {
+          [template.titleField]: { value: [...task.title].slice(0, 20).join('') },
+          [template.timeField]: { value: chinaCsvTime(task.dueAt).slice(0, 16) }
+        }
+      }),
+      signal: AbortSignal.timeout(5_000)
+    });
+    const result = (await response.json()) as { errcode?: number };
+    if (!response.ok || result.errcode !== 0)
+      throw new Error(`WeChat task message rejected (${Number(result.errcode) || response.status})`);
+  }
+
+  private async wechatSubject(code: string) {
+    return (await this.wechatIdentity(code)).subject;
+  }
+
+  private async wechatIdentity(code: string) {
+    const { appid, secret } = await this.wechatCredentials();
     const url = new URL('https://api.weixin.qq.com/sns/jscode2session');
     url.search = new URLSearchParams({
       appid,
@@ -908,6 +1010,6 @@ export class V2AttendanceService {
     ) {
       throw new UnauthorizedException('微信登录已失效，请重新登录');
     }
-    return digest(`${appid}:${result.openid}`);
+    return { appid, openid: result.openid, subject: digest(`${appid}:${result.openid}`) };
   }
 }

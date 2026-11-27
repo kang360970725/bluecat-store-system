@@ -105,6 +105,14 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+### 员工小程序任务提醒
+
+在同一个员工小程序的微信公众平台订阅消息中选择一次性任务提醒模板。将模板 ID、任务名称的 `thingN` 字段和截止时间的 `timeN` 字段分别填入生产环境的 `TASK_WECHAT_TEMPLATE_ID`、`TASK_WECHAT_TITLE_FIELD` 和 `TASK_WECHAT_TIME_FIELD`。所选模板应使用这两个字段。服务端沿用考勤配置中的 AppID 和 AppSecret，并需要启用后台任务。
+
+真机体验版联调时设置 `TASK_WECHAT_MINIPROGRAM_STATE=trial`，正式版使用 `formal`。在小程序后台将生产 HTTPS 域名加入 downloadFile 合法域名，供员工预览私有参考图。Web 代理需允许最多 15 MB 图片与表单开销，仓库示例配置为 20 MB。
+
+上线验证：绑定的员工在小程序任务页点击订阅下一条提醒。Web 端向其所在执行组发布带参考图的测试任务。检查微信提醒、点击直达任务、参考图预览；再次订阅后测试一个循环任务。
+
 如果未来绑定域名，将 `server_name _;` 改为实际域名。
 
 ### 6. 首次构建和启动

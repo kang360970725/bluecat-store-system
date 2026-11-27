@@ -2306,6 +2306,9 @@ model V2AttendanceWifiNetwork {
 }
 
 model V2AttendanceWechatBinding {
+  taskOpenIdCipher String? @map("task_open_id_cipher") @db.VarChar(255)
+  taskSubscriptionKey String? @map("task_subscription_key") @db.Char(64)
+  taskSubscribedAt DateTime? @map("task_subscribed_at")
   accountId String    @id @map("account_id")
   account   V2Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
   subject   String    @unique @db.Char(64)
@@ -2376,6 +2379,10 @@ enum V2OperationalTaskReviewMode {
 }
 
 model V2OperationalTask {
+  referenceImages Json? @map("reference_images")
+  referenceImageCount Int @default(0) @map("reference_image_count")
+  wechatPending Boolean @default(false) @map("wechat_pending")
+  @@index([wechatPending, createdAt], map: "v2_task_wechat_pending_idx")
   category String? @db.VarChar(40)
   checklistIssues Json? @map("checklist_issues")
   sourceIssue Json? @map("source_issue")
@@ -2505,6 +2512,7 @@ enum V2OperationalTaskCadence {
 }
 
 model V2OperationalTaskSchedule {
+  referenceImages Json? @map("reference_images")
   category String? @db.VarChar(40)
   archivedAt DateTime? @map("archived_at")
   ccRecipients Json? @map("cc_recipients")

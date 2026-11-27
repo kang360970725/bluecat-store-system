@@ -3,6 +3,7 @@ import sharp from 'sharp';
 
 export const maxEvidenceFiles = 12;
 export const maxLegacyEvidenceFiles = 3;
+export const maxTaskReferenceImages = 3;
 export const maxEvidenceFileSize = 5 * 1024 * 1024;
 export const maxRawEvidenceTotalSize = 24 * 1024 * 1024;
 export const maxEncodedEvidenceFileSize = 768 * 1024;
