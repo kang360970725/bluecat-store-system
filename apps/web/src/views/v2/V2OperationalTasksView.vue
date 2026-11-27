@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NBadge, NInputNumber, NTabPane, NTabs } from 'naive-ui';
+import { NBadge, NInputNumber } from 'naive-ui';
 import { NSelect } from '@/components/Select';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { API_BASE_URL, request } from '@/api/http';
@@ -215,6 +215,41 @@ const inboxLabels = {
 
 const base = '/v2/operational-tasks';
 const canManage = ref(false);
+const workspaceTabs = computed(() =>
+  ([
+    { id: 'mine', label: '我的任务' },
+    { id: 'dispatch', label: '任务发布' },
+    { id: 'manage', label: '任务管理', requiresManagement: true },
+    { id: 'automation', label: '循环任务' },
+    { id: 'settings', label: '任务配置', requiresManagement: true }
+  ] satisfies { id: WorkspaceSection; label: string; requiresManagement?: boolean }[])
+    .filter((tab) => !tab.requiresManagement || canManage.value)
+);
+
+function moveWorkspaceTab(event: KeyboardEvent, index: number) {
+  const tabs = workspaceTabs.value;
+  let next: number;
+  switch (event.key) {
+    case 'ArrowLeft':
+      next = (index - 1 + tabs.length) % tabs.length;
+      break;
+    case 'ArrowRight':
+      next = (index + 1) % tabs.length;
+      break;
+    case 'Home':
+      next = 0;
+      break;
+    case 'End':
+      next = tabs.length - 1;
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+  activeSection.value = tabs[next].id;
+  const tabList = (event.currentTarget as HTMLElement).parentElement;
+  tabList?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+}
 const canReport = ref(false);
 const canReviewExtensions = ref(false);
 const pendingExtensions = ref<PendingExtension[]>([]);
@@ -979,6 +1014,24 @@ onUnmounted(() => {
       </n-space>
     </header>
 
+    <div class="workspace-nav" role="tablist" aria-label="运营任务导航">
+      <button
+        v-for="(tab, index) in workspaceTabs"
+        :id="'task-tab-' + tab.id"
+        :key="tab.id"
+        type="button"
+        role="tab"
+        class="workspace-tab"
+        :aria-selected="activeSection === tab.id"
+        :tabindex="activeSection === tab.id ? 0 : -1"
+        aria-controls="task-workspace-panel"
+        @click="activeSection = tab.id"
+        @keydown="moveWorkspaceTab($event, index)"
+      >
+        {{ tab.label }}
+      </button>
+    </div>
+
     <div class="workspace-overview">
       <button
         class="overview-item"
@@ -1024,15 +1077,6 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <n-card size="small" class="workspace-nav">
-      <n-tabs v-model:value="activeSection" type="segment" animated>
-        <n-tab-pane name="mine" tab="我的任务" />
-        <n-tab-pane name="dispatch" tab="任务发布" />
-        <n-tab-pane v-if="canManage" name="manage" tab="任务管理" />
-        <n-tab-pane name="automation" tab="循环任务" />
-        <n-tab-pane v-if="canManage" name="settings" tab="任务配置" />
-      </n-tabs>
-    </n-card>
     <n-alert
       v-if="errorMessage && !selectedTask && !reopenTask && !extensionDialog"
       type="error"
@@ -1081,6 +1125,13 @@ onUnmounted(() => {
       </n-card>
     </n-modal>
 
+    <div
+      id="task-workspace-panel"
+      class="space-y-4"
+      role="tabpanel"
+      :aria-labelledby="'task-tab-' + activeSection"
+      tabindex="0"
+    >
     <n-card
       v-if="canManage"
       v-show="activeSection === 'settings'"
@@ -1757,6 +1808,7 @@ onUnmounted(() => {
       </n-space>
     </n-card>
 
+    </div>
     <n-modal
       :show="Boolean(extensionDialog)"
       :mask-closable="false"
@@ -2082,12 +2134,63 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.workspace-nav :deep(.n-tabs-nav) {
-  margin-bottom: 0;
+.workspace-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #d9e2ef;
+  border-radius: 12px;
+  background: #eef3f9;
 }
 
-.workspace-nav :deep(.n-tab-pane) {
-  display: none;
+.workspace-tab {
+  position: relative;
+  flex: 1 1 108px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid #ccd8e8;
+  border-radius: 8px;
+  background: #fff;
+  color: #34445e;
+  font-size: 15px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.workspace-tab:hover {
+  border-color: #82a8ec;
+  background: #f5f9ff;
+  color: #174597;
+}
+
+.workspace-tab[aria-selected='true'] {
+  border-color: #6e9af0;
+  background: #dce9ff;
+  color: #174397;
+  font-weight: 750;
+}
+
+.workspace-tab[aria-selected='true']::after {
+  position: absolute;
+  inset: auto 16px 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--bc-primary, #2563eb);
+  content: '';
+}
+
+.workspace-tab:focus-visible {
+  outline: 2px solid #174397;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-tab {
+    transition: none;
+  }
 }
 
 .message-dialog {
