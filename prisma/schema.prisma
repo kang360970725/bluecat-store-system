@@ -2610,6 +2610,7 @@ enum V2OperationalTaskNotificationKind {
   SUBMITTED
   COMPLETED
   RETURNED
+  ASSIGNED
 }
 
 model V2OperationalTaskNotification {

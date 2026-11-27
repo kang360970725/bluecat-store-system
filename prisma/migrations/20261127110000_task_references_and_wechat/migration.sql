@@ -10,3 +10,6 @@ ALTER TABLE `v2_operational_tasks`
   ADD INDEX `v2_task_wechat_pending_idx` (`wechat_pending`, `created_at`);
 
 ALTER TABLE `v2_operational_task_schedules` ADD COLUMN `reference_images` JSON NULL;
+
+ALTER TABLE `v2_operational_task_notifications`
+  MODIFY `kind` ENUM('RELEASED', 'CC', 'SUBMITTED', 'COMPLETED', 'RETURNED', 'ASSIGNED') NOT NULL;

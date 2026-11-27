@@ -191,7 +191,7 @@ interface TaskInbox {
   unread: number;
   rows: Array<{
     id: string;
-    kind: 'SUBMITTED' | 'COMPLETED' | 'RETURNED' | 'CC' | 'RELEASED';
+    kind: 'ASSIGNED' | 'SUBMITTED' | 'COMPLETED' | 'RETURNED' | 'CC' | 'RELEASED';
     reason: string | null;
     readAt: string | null;
     createdAt: string;
@@ -205,6 +205,7 @@ type WorkspaceSection =
 const activeSection = ref<WorkspaceSection>('mine');
 const sectionInitialized = ref(false);
 const inboxLabels = {
+  ASSIGNED: '收到新任务',
   SUBMITTED: '任务已提交',
   CC: '任务结果抄送',
   COMPLETED: '任务已确认完成',

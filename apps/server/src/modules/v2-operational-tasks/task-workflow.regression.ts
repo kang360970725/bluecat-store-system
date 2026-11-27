@@ -28,10 +28,14 @@ async function checkPublishing(reference: Buffer) {
     storeScopes: []
   };
   const taskWrites: unknown[] = [];
+  const notificationWrites: unknown[] = [];
   const templateWrites: unknown[] = [];
   const db = {
     $transaction: (action: (tx: unknown) => unknown) => action(db),
-    v2Account: { findFirst: async () => ordinaryAccount },
+    v2Account: {
+      findFirst: async () => ordinaryAccount,
+      findMany: async () => [{ id: 'receiver' }]
+    },
     v2Employment: {
       findMany: async () => [
         { store: { id: 'store-1', name: '一店' }, position: { id: 'cashier', name: '收银' } }
@@ -42,7 +46,14 @@ async function checkPublishing(reference: Buffer) {
     v2OperationalTask: {
       findMany: async () => [],
       createMany: async ({ data }: { data: unknown[] }) => taskWrites.push(...data),
-      create: async ({ data }: { data: unknown }) => taskWrites.push(data)
+      create: async ({ data }: { data: object }) => {
+        const task = { ...data, id: 'scheduled-task' };
+        taskWrites.push(task);
+        return task;
+      }
+    },
+    v2OperationalTaskNotification: {
+      createMany: async ({ data }: { data: unknown[] }) => notificationWrites.push(...data)
     },
     v2OperationalTaskSchedule: {
       findMany: async () => [],
@@ -81,6 +92,9 @@ async function checkPublishing(reference: Buffer) {
   Object.assign(templateWrites[0] as object, { nextRunAt: new Date(Date.now() - 1000) });
   await (service as unknown as { runSchedule(id: string): Promise<void> }).runSchedule('recurring:0');
   assert.equal(taskWrites.length, 2);
+  assert.deepEqual(notificationWrites, taskWrites.map((task) => ({
+    taskId: (task as { id: string }).id, recipientId: 'receiver', kind: 'ASSIGNED'
+  })));
   assert.deepEqual(taskWrites.map((task) => (task as { category: string }).category),
     ['门店自查', '门店自查']);
 
@@ -98,11 +112,13 @@ async function checkPublishing(reference: Buffer) {
   ));
   assert.deepEqual(await service.dispatchWithReferences('ordinary-account', payload, [reference]),
     { count: 1 });
-  assert.deepEqual(taskWrites.at(-1), {
+  const { id: attachedTaskId, ...attachedTask } = taskWrites.at(-1) as { id: string };
+  assert.ok(attachedTaskId);
+  assert.deepEqual(attachedTask, {
     storeId: 'store-1', targetKey: 'store:cashier', targetName: '收银',
     sourceTaskId: null, sourceIssue: undefined, title: input.title, category: input.category,
     referenceImages: [{ objectKey: 'references/photo.jpg', checksumSha256: 'image-checksum' }],
-    referenceImageCount: 1, wechatPending: true, description: input.description,
+    referenceImageCount: 1, wechatPending: false, description: input.description,
     checklist: [], reviewMode: 'REQUIRED', ccRecipients: [], dueAt: new Date(future),
     batchId: payload.batchId, createdBy: 'ordinary-account'
   });

@@ -1,4 +1,5 @@
 import { chinaCsvTime, csvRow } from '../../common/csv';
+import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -321,7 +322,7 @@ export class V2OperationalTasksService
             reason: true,
             readAt: true,
             createdAt: true,
-            task: { select: { title: true, store: { select: { name: true } } } }
+            task: { select: { id: true, title: true, store: { select: { name: true } } } }
           },
           orderBy: [
             { readAt: { sort: 'desc', nulls: 'first' } },
@@ -372,7 +373,7 @@ export class V2OperationalTasksService
     }
     if (targets.length) {
       or.push({
-        kind: { in: ['COMPLETED', 'RETURNED', 'RELEASED'] },
+        kind: { in: ['ASSIGNED', 'COMPLETED', 'RETURNED', 'RELEASED'] },
         task: {
           store: operating,
           OR: targets.map(({ storeId, targetKey }) => ({ storeId, targetKey }))
@@ -380,6 +381,41 @@ export class V2OperationalTasksService
       });
     }
     return { recipientId: accountId, OR: or };
+  }
+
+  private async notifyAssignment(
+    tx: Prisma.TransactionClient,
+    task: { id: string; storeId: string; targetKey: string }
+  ) {
+    const [kind, targetId] = task.targetKey.split(':');
+    if (!targetId || !['store', 'org', 'group'].includes(kind)) return;
+    const current = {
+      startedOn: { lte: new Date(new Date(Date.now() + 28_800_000).toISOString().slice(0, 10)) },
+      endedOn: null,
+      deletedAt: null,
+      position: activePosition
+    };
+    const target: Prisma.V2EmployeeWhereInput = kind === 'org'
+      ? { organizationEmployments: { some: {
+          ...current, costStoreId: task.storeId, costStore: operating, positionId: targetId
+        } } }
+      : { employments: { some: {
+          ...current, storeId: task.storeId, store: operating,
+          ...(kind === 'group' ? {
+            operationalTaskGroups: { some: { group: { id: targetId, storeId: task.storeId, enabled: true } } }
+          } : { positionId: targetId })
+        } } };
+    const recipients = await tx.v2Account.findMany({
+      where: {
+        status: 'ACTIVE', deletedAt: null, mustChangePassword: false,
+        employee: { ...activeEmployee, ...target }
+      },
+      select: { id: true }
+    });
+    if (!recipients.length) return;
+    await tx.v2OperationalTaskNotification.createMany({
+      data: recipients.map(({ id }) => ({ taskId: task.id, recipientId: id, kind: 'ASSIGNED' }))
+    });
   }
 
   private async notifyExecutor(
@@ -1152,7 +1188,7 @@ export class V2OperationalTasksService
   }
 
   private async processWechatDispatch() {
-    if (this.processingWechat) return;
+    if (this.processingWechat || !this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim()) return;
     this.processingWechat = true;
     try {
       const now = new Date();
@@ -1285,7 +1321,7 @@ export class V2OperationalTasksService
         data: { nextRunAt }
       });
       if (!update.count || slot > now) return;
-      await tx.v2OperationalTask.create({
+      const task = await tx.v2OperationalTask.create({
         data: {
           scheduleId: id,
           scheduledFor: slot,
@@ -1297,7 +1333,7 @@ export class V2OperationalTasksService
           category: schedule.category,
           referenceImages: taskReferences(schedule.referenceImages),
           referenceImageCount: taskReferences(schedule.referenceImages).length,
-          wechatPending: true,
+          wechatPending: Boolean(this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim()),
           description: schedule.description,
           ccRecipients: savedCc(schedule.ccRecipients),
           checklist: Array.isArray(schedule.checklist)
@@ -1306,8 +1342,10 @@ export class V2OperationalTasksService
           reviewMode: schedule.reviewMode,
           createdBy: schedule.scheduledBy,
           dueAt: new Date(slot.getTime() + duration)
-        }
+        },
+        select: { id: true, storeId: true, targetKey: true }
       });
+      await this.notifyAssignment(tx, task);
     });
   }
 
@@ -1675,8 +1713,8 @@ export class V2OperationalTasksService
       const ccRecipients = await this.resolveCc(tx, ccUsernames, [
         ...new Set(targets.map((target) => target.storeId))
       ]);
-      await tx.v2OperationalTask.createMany({
-        data: targets.map(({ storeId, targetKey, targetName }) => ({
+      const tasks = targets.map(({ storeId, targetKey, targetName }) => ({
+          id: randomUUID(),
           storeId,
           targetKey,
           targetName,
@@ -1686,7 +1724,7 @@ export class V2OperationalTasksService
           category,
           referenceImages: references.length ? references : undefined,
           referenceImageCount: references.length,
-          wechatPending: true,
+          wechatPending: Boolean(this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim()),
           description,
           checklist,
           reviewMode: input.reviewMode ?? 'REQUIRED',
@@ -1694,8 +1732,9 @@ export class V2OperationalTasksService
           dueAt,
           batchId: input.batchId,
           createdBy: accountId
-        }))
-      });
+      }));
+      await tx.v2OperationalTask.createMany({ data: tasks });
+      for (const task of tasks) await this.notifyAssignment(tx, task);
       return { count: targets.length };
     });
   }
