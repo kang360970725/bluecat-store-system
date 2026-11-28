@@ -355,7 +355,7 @@ export class V2AttendanceService {
     const target = matches.length === 1
       ? await activeTestTarget(this.prisma, matches[0].id, operatorId)
       : null;
-    if (!target) throw new ForbiddenException('该账号未获准免密码测试');
+    if (!target) throw new ForbiddenException('未找到可切换的中海国际店在职员工账号，请核对编号或手机号');
     const store = await this.prisma.v2Store.findUniqueOrThrow({
       where: { id: target.storeId }, select: { name: true }
     });

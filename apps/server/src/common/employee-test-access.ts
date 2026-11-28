@@ -11,7 +11,6 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
   const current = { endedOn: null, deletedAt: null, startedOn: { lte: nowInChina() } };
   return {
     ...employeeTestAccount,
-    dataScope: 'EMPLOYEE_STORE',
     roles: { none: { role: { code: 'super_admin', enabled: true, deletedAt: null } } },
     employee: {
       status: 'ACTIVE',
@@ -21,13 +20,7 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
         { organizationEmployments: {
           some: { ...current, costStoreId: storeId, costStore: { status: 'OPERATING', deletedAt: null } }
         } }
-      ],
-      employments: {
-        none: { ...current, storeId: { not: storeId } }
-      },
-      organizationEmployments: {
-        none: { ...current, OR: [{ costStoreId: null }, { costStoreId: { not: storeId } }] }
-      }
+      ]
     }
   };
 }
