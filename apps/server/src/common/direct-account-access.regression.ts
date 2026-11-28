@@ -177,7 +177,8 @@ async function run() {
   await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'legacy-admin'), /无测试权限/);
   assert.equal(targetLookups, 0);
   const operatorId = 'tester';
-  const preview = await attendance.previewEmployeeTestAccount(employeeNo, operatorId);
+  await assert.rejects(attendance.previewEmployeeTestAccount('　 ', operatorId), /请输入/);
+  const preview = await attendance.previewEmployeeTestAccount(' ＢＣ－２０２６–００１ ', operatorId);
   assert.equal(preview.name, realAccount.employee.name);
   assert.equal(preview.storeName, '中海国际店');
   assert.equal((await attendance.previewEmployeeTestAccount(realAccount.username, operatorId)).name, preview.name);

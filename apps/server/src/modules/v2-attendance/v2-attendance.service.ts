@@ -340,7 +340,8 @@ export class V2AttendanceService {
   async previewEmployeeTestAccount(identifier: string, operatorId: string) {
     const config = await activeEmployeeTestAccess(this.prisma, operatorId);
     if (!config) throw new ForbiddenException('测试模式未开启或当前账号无测试权限');
-    const key = identifier.trim();
+    const key = identifier.normalize('NFKC').trim().replace(/[‐‑‒–—−]/g, '-');
+    if (!key) throw new BadRequestException('请输入员工编号或登录手机号');
     const isPhone = /^1[3-9]\d{9}$/.test(key);
     const scope = testTargetScope(config.storeId);
     const matches = await this.prisma.v2Account.findMany({
