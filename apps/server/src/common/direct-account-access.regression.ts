@@ -7,7 +7,6 @@ import { resolveScopedPermission } from './scoped-permission';
 import { isLiveSuperAdmin } from './live-super-admin';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { AuthService } from '../modules/auth/auth.service';
-import { testDeviceDigest } from './employee-test-access';
 import { V2AttendanceService } from '../modules/v2-attendance/v2-attendance.service';
 
 const permission = 'operational-task:manage';
@@ -117,42 +116,38 @@ async function run() {
   assert.equal(await isLiveSuperAdmin(terminalAdminDb, 'employee'), false);
   const testPolicy = {
     enabled: true,
-    deviceDigest: '',
-    deviceExpiresAt: null as Date | null,
-    pairingDigest: null as string | null,
-    pairingExpiresAt: null as Date | null,
     storeId: 'zhonghai', updatedAt: new Date('2026-11-28T08:00:00Z')
   };
   const employeeNo = 'BC-2026-001';
   const realAccount = { id: 'test-account', employeeId: 'test-employee', username: account.username,
     employee: { name: '正式员工', phone: account.username, employeeNo } };
   let targetLookups = 0;
+  let operatorEnabled = true;
   const testDb = {
-    ...terminalAdminDb,
-    loginLog: { create: async ({ data }: { data: { accountType: string } }) =>
-      assert.equal(data.accountType, 'V2_EMPLOYEE_TEST') },
+    user: {
+      findFirst: async (query: Parameters<PrismaService['user']['findFirst']>[0]) =>
+        operatorEnabled ? terminalAdminDb.user.findFirst(query) : null
+    },
+    v2AuthorizationAudit: { create: async ({ data }: { data: { subject: string; actorId: string } }) => {
+      assert.equal(data.subject, 'EMPLOYEE_TEST_SESSION');
+      assert.equal(data.actorId, 'legacy-admin');
+    } },
     v2Store: { findUniqueOrThrow: async () => ({ name: '中海国际店' }) },
     v2EmployeeTestAccess: {
-      findFirst: async ({ where }: { where: { deviceDigest: string; deviceExpiresAt: { gt: Date } } }) =>
-        testPolicy.enabled && where.deviceDigest === testPolicy.deviceDigest &&
-        testPolicy.deviceExpiresAt && testPolicy.deviceExpiresAt > where.deviceExpiresAt.gt ? testPolicy : null,
-      updateMany: async ({ where, data }: {
-        where: { pairingDigest?: string; pairingExpiresAt?: { gt: Date } };
-        data: Partial<typeof testPolicy>;
-      }) => {
-        if (!testPolicy.enabled || (where.pairingDigest &&
-            (testPolicy.pairingDigest !== where.pairingDigest || !testPolicy.pairingExpiresAt ||
-             testPolicy.pairingExpiresAt <= where.pairingExpiresAt!.gt))) return { count: 0 };
+      findUnique: async () => testPolicy,
+      updateMany: async ({ data }: { data: Partial<typeof testPolicy> }) => {
+        if (!testPolicy.enabled) return { count: 0 };
         Object.assign(testPolicy, data);
+        testPolicy.updatedAt = new Date(testPolicy.updatedAt.getTime() + 1);
         return { count: 1 };
       }
     },
     v2Account: {
       ...terminalAdminDb.v2Account,
-      findMany: async ({ where }: { where: { OR: [{ username: string }, { employee: { employeeNo: string } }] } }) => {
+      findMany: async ({ where }: { where: { AND: { username?: string; employee?: { employeeNo: string } } } }) => {
         targetLookups++;
-        return where.OR[0].username === realAccount.username ||
-          where.OR[1].employee.employeeNo === employeeNo ? [{ id: realAccount.id }] : [];
+        return where.AND.username === realAccount.username ||
+          where.AND.employee?.employeeNo === employeeNo ? [{ id: realAccount.id }] : [];
       },
       findFirst: async ({ where }: {
         where: { id: string; dataScope: string; employee: { employments: { none: { storeId: { not: string } } } } };
@@ -167,24 +162,16 @@ async function run() {
   const jwt = new JwtService();
   const auth = new AuthService(jwt, config, testDb);
   const attendance = new V2AttendanceService(testDb, config, auth);
-  await assert.rejects(attendance.issueEmployeeTestPairing('employee'), /仅超级管理员/);
-  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'unknown'), /测试授权已失效/);
+  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'ordinary-employee'), /无测试权限/);
   assert.equal(targetLookups, 0);
-  const { code } = await attendance.issueEmployeeTestPairing('legacy-admin');
-  assert.notEqual(testPolicy.pairingDigest, code);
-  const results = await Promise.allSettled([attendance.pairEmployeeTestDevice(code), attendance.pairEmployeeTestDevice(code)]);
-  const [paired, replay] = results;
-  assert.equal(paired.status, 'fulfilled');
-  assert.equal(replay.status, 'rejected');
-  const { token } = paired.value;
-  assert.equal(testPolicy.deviceDigest, testDeviceDigest(token));
-  const preview = await attendance.previewEmployeeTestAccount(employeeNo, token);
+  const operatorId = 'legacy-admin';
+  const preview = await attendance.previewEmployeeTestAccount(employeeNo, operatorId);
   assert.equal(preview.name, realAccount.employee.name);
   assert.equal(preview.storeName, '中海国际店');
-  assert.equal((await attendance.previewEmployeeTestAccount(realAccount.username, token)).name, preview.name);
-  await assert.rejects(attendance.previewEmployeeTestAccount('TEST-UNLISTED', token), /该账号未获准/);
-  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, 'another-device'), /预览已失效/);
-  const session = await attendance.confirmEmployeeTestPreview(preview.ticket, token);
+  assert.equal((await attendance.previewEmployeeTestAccount(realAccount.username, operatorId)).name, preview.name);
+  await assert.rejects(attendance.previewEmployeeTestAccount('TEST-UNLISTED', operatorId), /该账号未获准/);
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, 'another-admin'), /预览已失效/);
+  const session = await attendance.confirmEmployeeTestPreview(preview.ticket, operatorId);
   assert.equal(session.user.id, realAccount.id);
   assert.equal(session.refreshToken, '');
   const testStrategy = new JwtStrategy(config, testDb);
@@ -199,24 +186,25 @@ async function run() {
   for (const route of [
     { method: 'POST', originalUrl: '/api/auth/switch-store' },
     { method: 'POST', originalUrl: '/api/v2/attendance/wechat/wifi-punch' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/wechat/test-preview' },
     { method: 'POST', originalUrl: '/api/v2/operational-tasks/dispatch' }
   ]) await assert.rejects(testStrategy.validate(route, testToken), /仅能使用/);
   for (const route of [
     { method: 'GET', originalUrl: '/api/v2/operational-tasks/inbox' },
     { method: 'POST', originalUrl: '/api/v2/operational-tasks/production-task/submit' }
   ]) assert.equal((await testStrategy.validate(route, testToken)).id, realAccount.id);
-  await assert.rejects(auth.confirmEmployeeTestPreview('invalid-ticket', token), /预览已失效/);
-  const originalExpiration = testPolicy.deviceExpiresAt;
-  testPolicy.deviceExpiresAt = new Date(0);
+  await assert.rejects(auth.confirmEmployeeTestPreview('invalid-ticket', operatorId), /预览已失效/);
+  operatorEnabled = false;
   await assert.rejects(testStrategy.validate(testSessionRequest, testToken), /授权已失效/);
-  testPolicy.deviceExpiresAt = originalExpiration;
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, operatorId), /测试账号不可用/);
+  operatorEnabled = true;
   await attendance.setEmployeeTestEnabled('legacy-admin', false);
   await assert.rejects(testStrategy.validate(testSessionRequest, testToken), /授权已失效/);
-  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, token), /测试账号不可用/);
-  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, token), /测试授权已失效/);
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, operatorId), /测试账号不可用/);
+  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, operatorId), /测试模式未开启/);
   testPolicy.enabled = true;
   await assert.rejects(testStrategy.validate(testSessionRequest, testToken), /授权已失效/);
-  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, token), /测试账号不可用/);
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, operatorId), /测试账号不可用/);
   console.log('Explicit account role regression checks passed');
 }
 

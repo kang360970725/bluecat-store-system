@@ -43,17 +43,7 @@ class TaskSubscriptionDto extends WechatDto {
   templateId!: string;
 }
 
-class EmployeeTestDeviceDto {
-  @Matches(/^[A-Za-z0-9_-]{43}$/)
-  deviceToken!: string;
-}
-
-class EmployeeTestPairingDto {
-  @Matches(/^[A-Za-z0-9_-]{32}$/)
-  code!: string;
-}
-
-class EmployeeTestLookupDto extends EmployeeTestDeviceDto {
+class EmployeeTestLookupDto {
   @IsString()
   @Length(1, 100)
   identifier!: string;
@@ -64,7 +54,7 @@ class EmployeeTestEnabledDto {
   enabled!: boolean;
 }
 
-class EmployeeTestTicketDto extends EmployeeTestDeviceDto {
+class EmployeeTestTicketDto {
   @IsString()
   @Length(1, 2048)
   ticket!: string;
@@ -261,21 +251,9 @@ export class V2AttendanceController {
 
   @Post('wechat/test-preview')
   @Header('Cache-Control', 'no-store')
-  employeeTestPreview(@Body() body: EmployeeTestLookupDto) {
-    return this.attendance.previewEmployeeTestAccount(body.identifier, body.deviceToken);
-  }
-
-  @Post('settings/employee-test-access/pairing')
-  @Header('Cache-Control', 'no-store')
   @UseGuards(JwtAuthGuard)
-  issueEmployeeTestPairing(@CurrentUserInfo() user: CurrentUser) {
-    return this.attendance.issueEmployeeTestPairing(user.id);
-  }
-
-  @Post('wechat/test-pair')
-  @Header('Cache-Control', 'no-store')
-  pairEmployeeTestDevice(@Body() body: EmployeeTestPairingDto) {
-    return this.attendance.pairEmployeeTestDevice(body.code);
+  employeeTestPreview(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestLookupDto) {
+    return this.attendance.previewEmployeeTestAccount(body.identifier, user.id);
   }
 
   @Patch('settings/employee-test-access')
@@ -286,8 +264,9 @@ export class V2AttendanceController {
 
   @Post('wechat/test-confirm-preview')
   @Header('Cache-Control', 'no-store')
-  employeeTestConfirmPreview(@Body() body: EmployeeTestTicketDto) {
-    return this.attendance.confirmEmployeeTestPreview(body.ticket, body.deviceToken);
+  @UseGuards(JwtAuthGuard)
+  employeeTestConfirmPreview(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestTicketDto) {
+    return this.attendance.confirmEmployeeTestPreview(body.ticket, user.id);
   }
 
   @Post('wechat/task-subscription')

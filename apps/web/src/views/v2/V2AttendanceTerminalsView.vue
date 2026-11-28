@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { NInputNumber } from 'naive-ui';
-import QRCode from 'qrcode';
 import { onMounted, ref } from 'vue';
 import { request } from '@/api/http';
 
@@ -27,7 +26,6 @@ interface EmployeeTestSettings {
 }
 const testEnabled = ref(false);
 const testSettingsLoaded = ref(false);
-const testPairingQr = ref('');
 
 function applySettings(value: AttendanceSettings) {
   settings.value = value;
@@ -82,15 +80,6 @@ function toggleTestAccess(enabled: boolean) {
       body: JSON.stringify({ enabled })
     });
     testEnabled.value = value.enabled;
-    testPairingQr.value = '';
-  });
-}
-
-function generateTestPairing() {
-  void run(async () => {
-    testPairingQr.value = '';
-    const { code } = await request<{ code: string }>(testPath + '/pairing', { method: 'POST' });
-    testPairingQr.value = await QRCode.toDataURL('bluecat-test:' + code, { width: 240, margin: 2 });
   });
 }
 
@@ -166,14 +155,7 @@ onMounted(() => void run(async () => {
         <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy" @update:value="toggleTestAccess" />
         <span role="status">{{ testEnabled ? '已开启' : '已关闭' }}</span>
       </n-space>
-      <p class="mt-3">授权测试手机后，可用本店员工编号或手机号切换账号，提交任务与读取消息会影响实际业务记录。测试会话暂停考勤，关闭开关后撤销测试授权，绑定或切换须验证员工账号和密码。</p>
-      <n-button v-if="testEnabled" class="mt-3" :loading="busy" :disabled="busy" @click="generateTestPairing">
-        生成一次性授权二维码
-      </n-button>
-      <div v-if="testPairingQr && testEnabled" class="mt-3">
-        <img :src="testPairingQr" alt="测试手机授权二维码" width="200" height="200" />
-        <p>在员工小程序「门店测试切换」内扫码。二维码 5 分钟有效，手机授权 4 小时有效。重新生成会撤销上一台手机的授权。</p>
-      </div>
+      <p class="mt-3">开启后，超级管理员可在小程序使用员工编号或手机号切换本店员工。测试期间可提交实际任务，考勤停用。关闭后，员工绑定和切换恢复账号密码验证。</p>
     </n-card>
     <n-alert v-if="errorMessage" type="error">{{ errorMessage }}</n-alert>
   </section>

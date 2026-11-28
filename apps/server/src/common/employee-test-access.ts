@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import { createHash } from 'node:crypto';
+import { isLiveSuperAdmin } from './live-super-admin';
 
 const employeeTestAccount = { status: 'ACTIVE', deletedAt: null } as const;
 export const employeeTestNumberPrefix = 'TEST-';
@@ -33,23 +33,17 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
   };
 }
 
-export function testDeviceDigest(secret: string) {
-  return createHash('sha256').update(secret).digest('hex');
-}
-
-export async function activeEmployeeTestDevice(db: Prisma.TransactionClient, deviceDigest: string) {
-  if (!/^[a-f0-9]{64}$/.test(deviceDigest)) return null;
-  return db.v2EmployeeTestAccess.findFirst({
-    where: { id: 1, enabled: true, deviceDigest, deviceExpiresAt: { gt: new Date() } }
-  });
+export async function activeEmployeeTestAccess(db: Prisma.TransactionClient, operatorId: string) {
+  const config = await db.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
+  return config?.enabled && await isLiveSuperAdmin(db, operatorId) ? config : null;
 }
 
 export async function activeTestTarget(
   db: Prisma.TransactionClient,
   targetId: string,
-  deviceDigest: string
+  operatorId: string
 ) {
-  const config = await activeEmployeeTestDevice(db, deviceDigest);
+  const config = await activeEmployeeTestAccess(db, operatorId);
   if (!config) return null;
   const target = await db.v2Account.findFirst({
     where: { id: targetId, ...testTargetScope(config.storeId) },

@@ -21,8 +21,7 @@ import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import { resolveScopedPermission } from '../../common/scoped-permission';
 import { PrismaService } from '../../database/prisma.service';
 import {
-  activeEmployeeTestDevice, activeTestTarget, employeeTestStoreName,
-  testDeviceDigest, testTargetScope
+  activeEmployeeTestAccess, activeTestTarget, employeeTestStoreName, testTargetScope
 } from '../../common/employee-test-access';
 import {
   digest,
@@ -301,8 +300,7 @@ export class V2AttendanceService {
     await this.requireAdmin(adminId);
     const settings = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
     return {
-      enabled: settings?.enabled ?? false,
-      deviceExpiresAt: settings?.enabled && settings.deviceDigest ? settings.deviceExpiresAt : null
+      enabled: settings?.enabled ?? false
     };
   }
 
@@ -311,10 +309,7 @@ export class V2AttendanceService {
     if (!enabled) {
       await this.prisma.v2EmployeeTestAccess.updateMany({
         where: { id: 1, enabled: true },
-        data: {
-          enabled: false, updatedBy: adminId, pairingDigest: null, pairingExpiresAt: null,
-          deviceDigest: null, deviceExpiresAt: null
-        }
+        data: { enabled: false, updatedBy: adminId }
       });
       return { enabled: false };
     }
@@ -332,60 +327,33 @@ export class V2AttendanceService {
     return { enabled: true };
   }
 
-  async issueEmployeeTestPairing(adminId: string) {
-    await this.requireAdmin(adminId);
-    const code = randomBytes(24).toString('base64url');
-    const expiresAt = new Date(Date.now() + 5 * 60_000);
-    const result = await this.prisma.v2EmployeeTestAccess.updateMany({
-      where: { id: 1, enabled: true },
-      data: {
-        pairingDigest: testDeviceDigest(code), pairingExpiresAt: expiresAt,
-        deviceDigest: null, deviceExpiresAt: null, updatedBy: adminId
-      }
-    });
-    if (result.count !== 1) throw new ForbiddenException('请先开启测试模式');
-    return { code, expiresAt };
-  }
-
-  async pairEmployeeTestDevice(code: string) {
-    const token = randomBytes(32).toString('base64url');
-    const expiresAt = new Date(Date.now() + 4 * 3_600_000);
-    const result = await this.prisma.v2EmployeeTestAccess.updateMany({
-      where: { id: 1, enabled: true, pairingDigest: testDeviceDigest(code), pairingExpiresAt: { gt: new Date() } },
-      data: {
-        pairingDigest: null, pairingExpiresAt: null,
-        deviceDigest: testDeviceDigest(token), deviceExpiresAt: expiresAt
-      }
-    });
-    if (result.count !== 1) throw new ForbiddenException('授权码已失效，请管理员重新生成');
-    return { token, expiresAt };
-  }
-
-  async previewEmployeeTestAccount(identifier: string, deviceToken: string) {
-    const deviceDigest = testDeviceDigest(deviceToken);
-    const config = await activeEmployeeTestDevice(this.prisma, deviceDigest);
-    if (!config) throw new ForbiddenException('测试授权已失效，请重新扫码');
+  async previewEmployeeTestAccount(identifier: string, operatorId: string) {
+    const config = await activeEmployeeTestAccess(this.prisma, operatorId);
+    if (!config) throw new ForbiddenException('测试模式未开启或当前账号无测试权限');
     const key = identifier.trim();
+    const isPhone = /^1[3-9]\d{9}$/.test(key);
+    const scope = testTargetScope(config.storeId);
     const matches = await this.prisma.v2Account.findMany({
       where: {
-        ...testTargetScope(config.storeId),
-        OR: [{ username: key }, { employee: { employeeNo: key } }]
+        ...scope,
+        AND: isPhone ? { username: key } : { employee: { employeeNo: key } }
       },
       select: { id: true }, take: 2
     });
+    if (matches.length > 1) throw new BadRequestException('查询到多个员工，请使用登录手机号');
     const target = matches.length === 1
-      ? await activeTestTarget(this.prisma, matches[0].id, deviceDigest)
+      ? await activeTestTarget(this.prisma, matches[0].id, operatorId)
       : null;
     if (!target) throw new ForbiddenException('该账号未获准免密码测试');
     const store = await this.prisma.v2Store.findUniqueOrThrow({
       where: { id: target.storeId }, select: { name: true }
     });
-    const ticket = await this.auth.createEmployeeTestPreviewTicket(target.id, target.policyVersion, deviceDigest);
+    const ticket = await this.auth.createEmployeeTestPreviewTicket(target.id, target.policyVersion, operatorId);
     return { name: target.name, storeName: store.name, ticket };
   }
 
-  confirmEmployeeTestPreview(ticket: string, deviceToken: string) {
-    return this.auth.confirmEmployeeTestPreview(ticket, deviceToken);
+  confirmEmployeeTestPreview(ticket: string, operatorId: string) {
+    return this.auth.confirmEmployeeTestPreview(ticket, operatorId);
   }
 
   async assignments(wechatCode: string, workDate?: string) {
