@@ -122,9 +122,10 @@ export class AuthService {
     return this.loginV2({ accountId, wechatBoundAt }, {});
   }
 
-  async openEmployeeTestSession(accountId: string, operatorSubject: string): Promise<LoginResult> {
+  async openEmployeeTestSession(accountId: string, operatorSubject: string, expectedPolicyVersion?: string): Promise<LoginResult> {
     const target = await activeTestTarget(this.prisma, accountId, operatorSubject);
-    if (!target) throw new UnauthorizedException('测试账号不可用');
+    if (!target || (expectedPolicyVersion && expectedPolicyVersion !== target.policyVersion))
+      throw new UnauthorizedException('测试账号不可用，请重新查询');
     const user: CurrentUser = {
       id: target.id, username: target.username, nickname: target.employee?.name ?? '',
       employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
@@ -138,6 +139,30 @@ export class AuthService {
       data: { accountType: 'V2_EMPLOYEE_TEST', accountId: user.id, username: user.username, displayName: user.nickname }
     });
     return { accessToken, refreshToken: '', expiresIn: 1800, user };
+  }
+
+  createEmployeeTestPreviewTicket(accountId: string, operatorSubject: string, policyVersion: string) {
+    return this.jwtService.signAsync(
+      { sub: accountId, operatorSubject, policyVersion },
+      {
+        secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
+        audience: 'employee-test-preview',
+        expiresIn: '2m'
+      }
+    );
+  }
+
+  async confirmEmployeeTestPreview(ticket: string): Promise<LoginResult> {
+    let preview: { sub: string; operatorSubject: string; policyVersion: string };
+    try {
+      preview = await this.jwtService.verifyAsync(ticket, {
+        secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
+        audience: 'employee-test-preview'
+      });
+    } catch {
+      throw new UnauthorizedException('预览已失效，请重新查询测试账号');
+    }
+    return this.openEmployeeTestSession(preview.sub, preview.operatorSubject, preview.policyVersion);
   }
 
   private async loginV2(

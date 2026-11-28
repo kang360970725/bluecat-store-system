@@ -130,6 +130,11 @@ export class CreateV2StorePositionDto {
 export class CreateV2EmployeeDto {
   @ApiPropertyOptional()
   @IsOptional()
+  @IsBoolean()
+  testAccount?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
   @MaxLength(40)
   employeeNo?: string;

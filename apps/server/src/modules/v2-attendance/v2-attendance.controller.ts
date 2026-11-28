@@ -55,19 +55,15 @@ class EmployeeTestConfirmDto extends WechatDto {
   accountId!: string;
 }
 
-class EmployeeTestSettingsDto {
+class EmployeeTestEnabledDto {
   @IsBoolean()
   enabled!: boolean;
+}
 
+class EmployeeTestTicketDto {
   @IsString()
-  @Length(0, 20)
-  operator!: string;
-
-  @IsArray()
-  @ArrayMaxSize(20)
-  @IsString({ each: true })
-  @Length(1, 100, { each: true })
-  targets!: string[];
+  @Length(1, 2048)
+  ticket!: string;
 }
 
 class BindDto extends WechatDto {
@@ -259,22 +255,28 @@ export class V2AttendanceController {
     return this.attendance.employeeTestSettings(user.id);
   }
 
-  @Patch('settings/employee-test-access')
-  @UseGuards(JwtAuthGuard)
-  saveEmployeeTestSettings(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestSettingsDto) {
-    return this.attendance.saveEmployeeTestSettings(user.id, body.enabled, body.operator, body.targets);
-  }
-
   @Post('wechat/test-preview')
   @Header('Cache-Control', 'no-store')
   employeeTestPreview(@Body() body: EmployeeTestLookupDto) {
     return this.attendance.previewEmployeeTestAccount(body.wechatCode, body.identifier);
   }
 
+  @Patch('settings/employee-test-access')
+  @UseGuards(JwtAuthGuard)
+  setEmployeeTestEnabled(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestEnabledDto) {
+    return this.attendance.setEmployeeTestEnabled(user.id, body.enabled);
+  }
+
   @Post('wechat/test-confirm')
   @Header('Cache-Control', 'no-store')
   employeeTestConfirm(@Body() body: EmployeeTestConfirmDto) {
     return this.attendance.openEmployeeTestAccount(body.wechatCode, body.accountId);
+  }
+
+  @Post('wechat/test-confirm-preview')
+  @Header('Cache-Control', 'no-store')
+  employeeTestConfirmPreview(@Body() body: EmployeeTestTicketDto) {
+    return this.attendance.confirmEmployeeTestPreview(body.ticket);
   }
 
   @Post('wechat/test-assignments')

@@ -23,13 +23,9 @@ const busy = ref(false);
 const testPath = settingsPath + '/employee-test-access';
 interface EmployeeTestSettings {
   enabled: boolean;
-  operator: string;
-  targets: string[];
 }
 const testEnabled = ref(false);
-const testOperator = ref('');
-const testTargets = ref('');
-const testSettingsSaved = ref(false);
+const testSettingsLoaded = ref(false);
 
 function applySettings(value: AttendanceSettings) {
   settings.value = value;
@@ -77,31 +73,20 @@ function saveSettings() {
   });
 }
 
-function applyTestSettings(value: EmployeeTestSettings) {
-  testEnabled.value = value.enabled;
-  testOperator.value = value.operator;
-  testTargets.value = value.targets.join('\n');
-}
-
-function saveTestSettings() {
+function toggleTestAccess(enabled: boolean) {
   void run(async () => {
-    testSettingsSaved.value = false;
     const value = await request<EmployeeTestSettings>(testPath, {
       method: 'PATCH',
-      body: JSON.stringify({
-        enabled: testEnabled.value,
-        operator: testOperator.value.trim(),
-        targets: testTargets.value.split(/\r?\n/).map((target) => target.trim()).filter(Boolean)
-      })
+      body: JSON.stringify({ enabled })
     });
-    applyTestSettings(value);
-    testSettingsSaved.value = true;
+    testEnabled.value = value.enabled;
   });
 }
 
 onMounted(() => void run(async () => {
   applySettings(await request<AttendanceSettings>(settingsPath));
-  applyTestSettings(await request<EmployeeTestSettings>(testPath));
+  testEnabled.value = (await request<EmployeeTestSettings>(testPath)).enabled;
+  testSettingsLoaded.value = true;
 }));
 </script>
 
@@ -165,25 +150,12 @@ onMounted(() => void run(async () => {
         </n-space>
       </n-form>
     </n-card>
-    <n-card v-if="settings" title="中海国际店测试账号" size="small">
-      <p class="mb-4">仅指定的已绑定微信可切换名单中的测试账号。测试身份有效 30 分钟，关闭后立即失效。</p>
-      <n-form>
-        <n-form-item label="开启免密码测试">
-          <n-switch v-model:value="testEnabled" :disabled="busy" @update:value="testSettingsSaved = false" />
-        </n-form-item>
-        <n-form-item label="测试操作员手机号">
-          <n-input v-model:value="testOperator" maxlength="20" placeholder="填写已绑定微信的员工账号" :disabled="busy || !testEnabled" />
-        </n-form-item>
-        <n-form-item label="测试名单（每行一个手机号或员工编码，最多 20 个）">
-          <n-input v-model:value="testTargets" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" :disabled="busy || !testEnabled" />
-        </n-form-item>
-        <n-space align="center">
-          <n-button type="primary" :disabled="busy || (testEnabled && (!testOperator.trim() || !testTargets.trim()))" @click="saveTestSettings">
-            保存测试设置
-          </n-button>
-          <span v-if="testSettingsSaved" role="status">已保存</span>
-        </n-space>
-      </n-form>
+    <n-card v-if="testSettingsLoaded" title="中海国际店测试模式" size="small">
+      <n-space align="center">
+        <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy" @update:value="toggleTestAccess" />
+        <span role="status">{{ testEnabled ? '已开启' : '已关闭' }}</span>
+      </n-space>
+      <p class="mt-3">开关即时生效，保持开启直到手动关闭。已绑定微信的门店排班管理人员可切换员工编号以 TEST- 开头的测试账号。</p>
     </n-card>
     <n-alert v-if="errorMessage" type="error">{{ errorMessage }}</n-alert>
   </section>

@@ -1,4 +1,6 @@
 import { isLiveSuperAdmin } from '../../common/live-super-admin';
+import { randomUUID } from 'node:crypto';
+import { employeeTestNumberPrefix, employeeTestStoreName } from '../../common/employee-test-access';
 import {
   BadRequestException,
   ForbiddenException,
@@ -673,6 +675,16 @@ export class V2MasterDataService {
       throw new BadRequestException('请选择门店或总部组织');
     if (dto.storeId) this.assertStoreAccess(user, dto.storeId);
     const createLoginAccount = dto.createLoginAccount !== false;
+    if (dto.testAccount) {
+      if (!(await this.isLiveSuperAdmin(user.id)))
+        throw new ForbiddenException('仅超级管理员可以新增专用测试账号');
+      const store = dto.storeId && await this.prisma.v2Store.findFirst({
+        where: { id: dto.storeId, name: { contains: employeeTestStoreName }, status: 'OPERATING', deletedAt: null },
+        select: { id: true }
+      });
+      if (isHeadOffice || !store || !createLoginAccount || (dto.status && dto.status !== 'ACTIVE'))
+        throw new BadRequestException('测试账号须为中海国际店在职员工并开通登录账号');
+    }
     if (dto.loginRoleIds != null) {
       if (!(await this.isLiveSuperAdmin(user.id)))
         throw new ForbiddenException('仅超级管理员可以绑定账号角色');
@@ -734,11 +746,11 @@ export class V2MasterDataService {
     }
     const hiredOn = new Date(dto.hiredOn);
     const employeeNo = await this.nextCode(
-      `EMPLOYEE:${hiredOn.getUTCFullYear()}`,
-      `BC-${hiredOn.getUTCFullYear()}`
+      `${dto.testAccount ? 'TEST_EMPLOYEE' : 'EMPLOYEE'}:${hiredOn.getUTCFullYear()}`,
+      `${dto.testAccount ? employeeTestNumberPrefix : 'BC-'}${hiredOn.getUTCFullYear()}`
     );
     const passwordHash = createLoginAccount
-      ? await bcrypt.hash(dto.loginPassword || '123456', 12)
+      ? await bcrypt.hash(dto.testAccount ? randomUUID() : dto.loginPassword || '123456', 12)
       : undefined;
     return this.prisma.$transaction(async (tx) => {
       await this.assertEmployeePhoneAvailable(tx, phone);
@@ -803,7 +815,7 @@ export class V2MasterDataService {
             employeeId: employee.id,
             username: phone,
             passwordHash: passwordHash!,
-            mustChangePassword: true,
+            mustChangePassword: !dto.testAccount,
             displayName: dto.loginNickname?.trim() || dto.name,
             dataScope: 'EMPLOYEE_STORE',
             usesAccountRoles: true,

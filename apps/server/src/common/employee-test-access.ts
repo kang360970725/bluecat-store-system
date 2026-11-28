@@ -1,6 +1,9 @@
 import type { Prisma } from '@prisma/client';
+import { resolveScopedPermission } from './scoped-permission';
 
-export const employeeTestAccount = { status: 'ACTIVE', deletedAt: null } as const;
+const employeeTestAccount = { status: 'ACTIVE', deletedAt: null } as const;
+export const employeeTestNumberPrefix = 'TEST-';
+export const employeeTestStoreName = '中海国际';
 
 const nowInChina = () =>
   new Date(new Date(Date.now() + 28_800_000).toISOString().slice(0, 10));
@@ -15,6 +18,7 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
     employee: {
       status: 'ACTIVE',
       deletedAt: null,
+      employeeNo: { startsWith: employeeTestNumberPrefix },
       employments: {
         some: { ...current, storeId, store: { status: 'OPERATING', deletedAt: null } },
         none: { ...current, storeId: { not: storeId } }
@@ -24,8 +28,20 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
   };
 }
 
-export function testAccountIds(value: Prisma.JsonValue) {
-  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
+export async function employeeTestOperator(db: Prisma.TransactionClient, operatorSubject: string, storeId: string) {
+  const binding = await db.v2AttendanceWechatBinding.findFirst({
+    where: {
+      subject: operatorSubject,
+      account: {
+        ...employeeTestAccount, mustChangePassword: false,
+        employee: { status: 'ACTIVE', deletedAt: null }
+      }
+    },
+    select: { accountId: true }
+  });
+  if (!binding) return false;
+  const access = await resolveScopedPermission(binding.accountId, 'schedule:update', db);
+  return Boolean(access && (!access.storeIds || access.storeIds.includes(storeId)));
 }
 
 export async function activeTestTarget(
@@ -34,18 +50,7 @@ export async function activeTestTarget(
   operatorSubject: string
 ) {
   const config = await db.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
-  if (!config?.enabled || !testAccountIds(config.targetAccountIds).includes(targetId)) return null;
-  const binding = await db.v2AttendanceWechatBinding.findFirst({
-    where: {
-      subject: operatorSubject, accountId: config.operatorAccountId,
-      account: {
-        ...employeeTestAccount, mustChangePassword: false,
-        employee: { status: 'ACTIVE', deletedAt: null }
-      }
-    },
-    select: { accountId: true }
-  });
-  if (!binding) return null;
+  if (!config?.enabled || !(await employeeTestOperator(db, operatorSubject, config.storeId))) return null;
   const target = await db.v2Account.findFirst({
     where: { id: targetId, ...testTargetScope(config.storeId) },
     select: { id: true, username: true, employeeId: true, employee: { select: { name: true, phone: true } } }

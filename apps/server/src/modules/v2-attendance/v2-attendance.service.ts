@@ -20,7 +20,7 @@ import { compare } from 'bcryptjs';
 import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import { resolveScopedPermission } from '../../common/scoped-permission';
 import { PrismaService } from '../../database/prisma.service';
-import { activeTestTarget, testAccountIds, testTargetScope } from '../../common/employee-test-access';
+import { activeTestTarget, employeeTestOperator, employeeTestStoreName, testTargetScope } from '../../common/employee-test-access';
 import type { CurrentUser } from '@bluecat/shared';
 import {
   digest,
@@ -298,83 +298,40 @@ export class V2AttendanceService {
   async employeeTestSettings(adminId: string) {
     await this.requireAdmin(adminId);
     const settings = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
-    if (!settings) return { enabled: false, operator: '', targets: [] };
-    const ids = testAccountIds(settings.targetAccountIds);
-    const accounts = await this.prisma.v2Account.findMany({
-      where: { id: { in: [settings.operatorAccountId, ...ids] } },
-      select: { id: true, username: true, employee: { select: { employeeNo: true } } }
-    });
-    return {
-      enabled: settings.enabled,
-      operator: accounts.find((item) => item.id === settings.operatorAccountId)?.username ?? '',
-      targets: ids.flatMap((id) => {
-        const item = accounts.find((account) => account.id === id);
-        return item ? [item.employee?.employeeNo ?? item.username] : [];
-      })
-    };
+    return { enabled: settings?.enabled ?? false };
   }
 
-  async saveEmployeeTestSettings(adminId: string, enable: boolean, operator: string, identifiers: string[]) {
+  async setEmployeeTestEnabled(adminId: string, enabled: boolean) {
     await this.requireAdmin(adminId);
-    if (!enable) {
+    if (!enabled) {
       await this.prisma.v2EmployeeTestAccess.updateMany({
-        where: { id: 1 }, data: { enabled: false, updatedBy: adminId }
+        where: { id: 1, enabled: true }, data: { enabled: false, updatedBy: adminId }
       });
-      return this.employeeTestSettings(adminId);
+      return { enabled: false };
     }
     const stores = await this.prisma.v2Store.findMany({
-      where: { ...operatingStore, name: { contains: '中海国际' } },
+      where: { ...operatingStore, name: { contains: employeeTestStoreName } },
       select: { id: true }, take: 2
     });
     if (stores.length !== 1) throw new BadRequestException('无法唯一识别中海国际店');
-    const storeId = stores[0].id;
-    const owner = await this.prisma.v2Account.findFirst({
-      where: {
-        ...activeAccount, username: operator.trim(), mustChangePassword: false,
-        employee: activeEmployee, attendanceWechatBinding: { isNot: null }
-      },
-      select: { id: true }
-    });
-    if (!owner) throw new BadRequestException('操作员必须是已绑定微信的有效员工账号');
-    const keys = [...new Set(identifiers.map((value) => value.trim()).filter(Boolean))];
-    if (keys.length === 0) throw new BadRequestException('请填写指定测试账号');
-    const targets = await this.prisma.v2Account.findMany({
-      where: {
-        ...testTargetScope(storeId),
-        OR: [{ username: { in: keys } }, { employee: { employeeNo: { in: keys } } }]
-      },
-      select: { id: true, username: true, employee: { select: { employeeNo: true, phone: true } } }
-    });
-    const ids = new Set<string>();
-    for (const key of keys) {
-      const matching = targets.filter((target) =>
-        target.employee?.phone === target.username &&
-        (target.username === key || target.employee.employeeNo === key)
-      );
-      if (matching.length !== 1 || matching[0].id === owner.id)
-        throw new BadRequestException('请使用中海国际店有效测试账号的手机号或员工编码，且操作员不能同时是测试账号');
-      ids.add(matching[0].id);
-    }
-    const data = { enabled: true, storeId, operatorAccountId: owner.id, targetAccountIds: [...ids], updatedBy: adminId };
+    const data = { enabled: true, storeId: stores[0].id, updatedBy: adminId };
     await this.prisma.v2EmployeeTestAccess.upsert({
-      where: { id: 1 }, create: { id: 1, ...data }, update: data
+      where: { id: 1 },
+      create: { id: 1, ...data, operatorAccountId: '', targetAccountIds: [] },
+      update: data
     });
-    return this.employeeTestSettings(adminId);
+    return { enabled: true };
   }
 
   async previewEmployeeTestAccount(wechatCode: string, identifier: string) {
-    const subject = await this.wechatSubject(wechatCode);
     const config = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
-    if (!config?.enabled) throw new ForbiddenException('当前微信无法使用测试账号入口');
-    const operator = await this.prisma.v2AttendanceWechatBinding.findFirst({
-      where: { accountId: config.operatorAccountId, subject, account: activeAccount },
-      select: { accountId: true }
-    });
-    if (!operator) throw new ForbiddenException('当前微信无法使用测试账号入口');
+    if (!config?.enabled) throw new ForbiddenException('后台尚未开启测试模式');
+    const subject = await this.wechatSubject(wechatCode);
+    if (!(await employeeTestOperator(this.prisma, subject, config.storeId)))
+      throw new ForbiddenException('请使用已绑定且有中海国际店排班管理权限的微信');
     const key = identifier.trim();
     const matches = await this.prisma.v2Account.findMany({
       where: {
-        id: { in: testAccountIds(config.targetAccountIds) },
         ...testTargetScope(config.storeId),
         OR: [{ username: key }, { employee: { employeeNo: key } }]
       },
@@ -387,11 +344,16 @@ export class V2AttendanceService {
     const store = await this.prisma.v2Store.findUniqueOrThrow({
       where: { id: target.storeId }, select: { name: true }
     });
-    return { accountId: target.id, name: target.employee.name, storeName: store.name };
+    const ticket = await this.auth.createEmployeeTestPreviewTicket(target.id, subject, target.policyVersion);
+    return { accountId: target.id, name: target.employee.name, storeName: store.name, ticket };
   }
 
   async openEmployeeTestAccount(wechatCode: string, accountId: string) {
     return this.auth.openEmployeeTestSession(accountId, await this.wechatSubject(wechatCode));
+  }
+
+  confirmEmployeeTestPreview(ticket: string) {
+    return this.auth.confirmEmployeeTestPreview(ticket);
   }
 
   async assignments(wechatCode: string, workDate?: string, testActor?: CurrentUser) {
