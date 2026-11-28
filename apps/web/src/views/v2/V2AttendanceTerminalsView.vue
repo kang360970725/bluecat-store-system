@@ -162,7 +162,7 @@ onMounted(() => void run(async () => {
         <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy || (!testEnabled && !/^1[3-9]\d{9}$/.test(testOperatorPhone.trim()))" @update:value="toggleTestAccess" />
         <span role="status">{{ testEnabled ? '已开启' : '已关闭' }}</span>
       </n-space>
-      <p class="mt-3">开启后，指定员工用自己的账号登录一次，即可用员工编号或手机号切换本店员工。测试期间可提交实际任务，考勤停用。关闭后，员工绑定和切换恢复账号密码验证。</p>
+      <p class="mt-3">开启后，指定员工用自己的账号登录一次，即可用员工编号或手机号切换本店员工。验收期间提交的任务、打卡和补卡将写入正式记录。关闭后，员工绑定和切换恢复账号密码验证。</p>
     </n-card>
     <n-alert v-if="errorMessage" type="error">{{ errorMessage }}</n-alert>
   </section>

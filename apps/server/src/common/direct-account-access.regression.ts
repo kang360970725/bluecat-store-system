@@ -8,6 +8,7 @@ import { isLiveSuperAdmin } from './live-super-admin';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { AuthService } from '../modules/auth/auth.service';
 import { V2AttendanceService } from '../modules/v2-attendance/v2-attendance.service';
+import { testTargetScope } from './employee-test-access';
 
 const permission = 'operational-task:manage';
 const account = {
@@ -119,6 +120,13 @@ async function run() {
     storeId: 'zhonghai', operatorAccountId: 'tester', updatedAt: new Date('2026-11-28T08:00:00Z')
   };
   const employeeNo = 'BC-2026-001';
+  const targetScope = testTargetScope('zhonghai');
+  assert.equal(targetScope.dataScope, undefined);
+  assert.deepEqual(targetScope.employee?.OR?.map((scope) =>
+    scope.employments?.some?.storeId ?? scope.organizationEmployments?.some?.costStoreId
+  ), ['zhonghai', 'zhonghai']);
+  assert.equal(targetScope.employee?.employments, undefined);
+  assert.equal(targetScope.employee?.organizationEmployments, undefined);
   const realAccount = { id: 'test-account', employeeId: 'test-employee', username: account.username,
     employee: { name: '正式员工', phone: account.username, employeeNo } };
   let targetLookups = 0;
@@ -155,12 +163,11 @@ async function run() {
           where.AND.employee?.employeeNo === employeeNo ? [{ id: realAccount.id }] : [];
       },
       findFirst: async ({ where }: {
-        where: { id: string; username?: string; dataScope: string; employee: { employments: { none: { storeId: { not: string } } } } };
+        where: { id: string; username?: string; dataScope?: string };
       }) => {
         if (where.username) return where.username === '13800000009' ? { id: 'tester' } : null;
         if (where.id === 'tester') return operatorEnabled ? { id: 'tester' } : null;
-        assert.equal(where.dataScope, 'EMPLOYEE_STORE');
-        assert.equal(where.employee.employments.none.storeId.not, 'zhonghai');
+        assert.equal(where.dataScope, undefined);
         return where.id === realAccount.id ? realAccount : null;
       }
     }
@@ -177,11 +184,12 @@ async function run() {
   await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'legacy-admin'), /无测试权限/);
   assert.equal(targetLookups, 0);
   const operatorId = 'tester';
-  const preview = await attendance.previewEmployeeTestAccount(employeeNo, operatorId);
+  await assert.rejects(attendance.previewEmployeeTestAccount('　 ', operatorId), /请输入/);
+  const preview = await attendance.previewEmployeeTestAccount(' ＢＣ－２０２６–００１ ', operatorId);
   assert.equal(preview.name, realAccount.employee.name);
   assert.equal(preview.storeName, '中海国际店');
   assert.equal((await attendance.previewEmployeeTestAccount(realAccount.username, operatorId)).name, preview.name);
-  await assert.rejects(attendance.previewEmployeeTestAccount('TEST-UNLISTED', operatorId), /该账号未获准/);
+  await assert.rejects(attendance.previewEmployeeTestAccount('TEST-UNLISTED', operatorId), /未找到可切换/);
   await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, 'another-admin'), /预览已失效/);
   const session = await attendance.confirmEmployeeTestPreview(preview.ticket, operatorId);
   assert.equal(session.user.id, realAccount.id);
@@ -194,6 +202,7 @@ async function run() {
   assert.deepEqual(testUser.accessibleStoreIds, ['zhonghai']);
   assert.deepEqual(testUser.permissions, []);
   assert.equal(testUser.username, employeeNo);
+  assert.equal(testUser.employeeTestAuthorizedBy, operatorId);
   await assert.rejects(testStrategy.validate(testSessionRequest, { ...testToken, sub: 'regular-employee' }), /授权已失效/);
   for (const route of [
     { method: 'POST', originalUrl: '/api/auth/switch-store' },
@@ -203,6 +212,9 @@ async function run() {
   ]) await assert.rejects(testStrategy.validate(route, testToken), /仅能使用/);
   for (const route of [
     { method: 'GET', originalUrl: '/api/v2/operational-tasks/inbox' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/test/assignments' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/test/wifi-punch' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/test/corrections' },
     { method: 'POST', originalUrl: '/api/v2/operational-tasks/production-task/submit' }
   ]) assert.equal((await testStrategy.validate(route, testToken)).id, realAccount.id);
   await assert.rejects(auth.confirmEmployeeTestPreview('invalid-ticket', operatorId), /预览已失效/);

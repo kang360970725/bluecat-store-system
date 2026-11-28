@@ -57,6 +57,8 @@ const attendanceRecordSelect = {
   }
 } satisfies Prisma.V2ScheduleAssignmentSelect;
 
+type AttendanceLogin = string | { employeeId: string; storeId: string; operatorId: string };
+
 @Injectable()
 export class V2AttendanceService {
   private taskToken?: { appId: string; token: string; expiresAt: number };
@@ -340,7 +342,8 @@ export class V2AttendanceService {
   async previewEmployeeTestAccount(identifier: string, operatorId: string) {
     const config = await activeEmployeeTestAccess(this.prisma, operatorId);
     if (!config) throw new ForbiddenException('测试模式未开启或当前账号无测试权限');
-    const key = identifier.trim();
+    const key = identifier.normalize('NFKC').trim().replace(/[‐‑‒–—−]/g, '-');
+    if (!key) throw new BadRequestException('请输入员工编号或登录手机号');
     const isPhone = /^1[3-9]\d{9}$/.test(key);
     const scope = testTargetScope(config.storeId);
     const matches = await this.prisma.v2Account.findMany({
@@ -354,7 +357,7 @@ export class V2AttendanceService {
     const target = matches.length === 1
       ? await activeTestTarget(this.prisma, matches[0].id, operatorId)
       : null;
-    if (!target) throw new ForbiddenException('该账号未获准免密码测试');
+    if (!target) throw new ForbiddenException('未找到可切换的中海国际店在职员工账号，请核对编号或手机号');
     const store = await this.prisma.v2Store.findUniqueOrThrow({
       where: { id: target.storeId }, select: { name: true }
     });
@@ -366,16 +369,17 @@ export class V2AttendanceService {
     return this.auth.confirmEmployeeTestPreview(ticket, operatorId);
   }
 
-  async assignments(wechatCode: string, workDate?: string) {
-    const employeeId = await this.employeeFor(
-      await this.wechatSubject(wechatCode)
-    );
+  async assignments(login: AttendanceLogin, workDate?: string) {
+    const employeeId = typeof login === 'string'
+      ? await this.employeeFor(await this.wechatSubject(login))
+      : login.employeeId;
+    const storeId = typeof login === 'string' ? undefined : login.storeId;
     const today = this.localDate(new Date());
     const yesterday = new Date(today.getTime() - 86_400_000);
     const tomorrow = new Date(today.getTime() + 86_400_000);
     return this.prisma.v2ScheduleAssignment.findMany({
       where: {
-        ...this.assignmentScope(employeeId),
+        ...this.assignmentScope(employeeId, storeId),
         workDate: workDate
           ? new Date(workDate)
           : { gte: yesterday, lte: tomorrow }
@@ -414,7 +418,7 @@ export class V2AttendanceService {
   }
 
   async wifiPunch(
-    wechatCode: string,
+    login: AttendanceLogin,
     assignmentId: string,
     bssid: string,
     kind: V2AttendancePunchKind
@@ -435,11 +439,12 @@ export class V2AttendanceService {
       throw new ServiceUnavailableException('尚未配置打卡时间窗口');
 
     const normalizedBssid = normalizeBssid(bssid);
-    const subject = await this.wechatSubject(wechatCode);
+    const subject = typeof login === 'string' ? await this.wechatSubject(login) : login;
     return this.write(async (tx) => {
-      const employeeId = await this.employeeFor(subject, tx);
+      const employeeId = typeof subject === 'string' ? await this.employeeFor(subject, tx) : subject.employeeId;
+      const storeId = typeof subject === 'string' ? undefined : subject.storeId;
       const assignment = await tx.v2ScheduleAssignment.findFirst({
-        where: { id: assignmentId, ...this.assignmentScope(employeeId) },
+        where: { id: assignmentId, ...this.assignmentScope(employeeId, storeId) },
         include: {
           shift: true,
           period: true,
@@ -505,12 +510,18 @@ export class V2AttendanceService {
           reviewNote: '已取得正常 Wi-Fi 打卡记录，补卡申请自动关闭'
         }
       });
+      if (typeof subject !== 'string') {
+        await tx.v2AuthorizationAudit.create({ data: {
+          subject: 'EMPLOYEE_TEST_ATTENDANCE_PUNCH', subjectId: punch.id, subjectName: kind,
+          actorId: subject.operatorId, after: { assignmentId, employeeId, storeId: subject.storeId }
+        } });
+      }
       return punch;
     });
   }
 
   async requestCorrection(
-    wechatCode: string,
+    login: AttendanceLogin,
     assignmentId: string,
     kind: V2AttendancePunchKind,
     requestedTime: string,
@@ -523,11 +534,12 @@ export class V2AttendanceService {
       !reason.trim()
     )
       throw new BadRequestException('请填写有效的补卡时间和原因');
-    const subject = await this.wechatSubject(wechatCode);
+    const subject = typeof login === 'string' ? await this.wechatSubject(login) : login;
     return this.write(async (tx) => {
-      const employeeId = await this.employeeFor(subject, tx);
+      const employeeId = typeof subject === 'string' ? await this.employeeFor(subject, tx) : subject.employeeId;
+      const storeId = typeof subject === 'string' ? undefined : subject.storeId;
       const assignment = await tx.v2ScheduleAssignment.findFirst({
-        where: { id: assignmentId, ...this.assignmentScope(employeeId) },
+        where: { id: assignmentId, ...this.assignmentScope(employeeId, storeId) },
         include: { shift: true, attendancePunches: { where: { kind } } }
       });
       if (!assignment?.shift)
@@ -550,7 +562,7 @@ export class V2AttendanceService {
         where: { pendingKey }
       });
       if (pending) return pending;
-      return tx.v2AttendanceCorrection.create({
+      const correction = await tx.v2AttendanceCorrection.create({
         data: {
           assignmentId,
           kind,
@@ -559,6 +571,13 @@ export class V2AttendanceService {
           pendingKey
         }
       });
+      if (typeof subject !== 'string') {
+        await tx.v2AuthorizationAudit.create({ data: {
+          subject: 'EMPLOYEE_TEST_ATTENDANCE_CORRECTION', subjectId: correction.id, subjectName: kind,
+          actorId: subject.operatorId, after: { assignmentId, employeeId, storeId: subject.storeId }
+        } });
+      }
+      return correction;
     });
   }
 
@@ -885,13 +904,14 @@ export class V2AttendanceService {
   }
 
   private assignmentScope(
-    employeeId: string
+    employeeId: string,
+    storeId?: string
   ): Prisma.V2ScheduleAssignmentWhereInput {
     return {
       employeeId,
       isRest: false,
       shiftId: { not: null },
-      period: { status: { in: ['PUBLISHED', 'LOCKED'] }, store: operatingStore }
+      period: { storeId, status: { in: ['PUBLISHED', 'LOCKED'] }, store: operatingStore }
     };
   }
 

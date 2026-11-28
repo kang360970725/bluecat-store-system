@@ -11,7 +11,6 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
   const current = { endedOn: null, deletedAt: null, startedOn: { lte: nowInChina() } };
   return {
     ...employeeTestAccount,
-    dataScope: 'EMPLOYEE_STORE',
     roles: { none: { role: { code: 'super_admin', enabled: true, deletedAt: null } } },
     employee: {
       status: 'ACTIVE',
@@ -21,13 +20,7 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
         { organizationEmployments: {
           some: { ...current, costStoreId: storeId, costStore: { status: 'OPERATING', deletedAt: null } }
         } }
-      ],
-      employments: {
-        none: { ...current, storeId: { not: storeId } }
-      },
-      organizationEmployments: {
-        none: { ...current, OR: [{ costStoreId: null }, { costStoreId: { not: storeId } }] }
-      }
+      ]
     }
   };
 }
@@ -69,6 +62,11 @@ export async function activeTestTarget(
 
 export function employeeTestRouteAllowed(method: string, pathname: string) {
   if (method === 'GET' && pathname === '/api/auth/me') return true;
+  if (method === 'POST' && [
+    '/api/v2/attendance/test/assignments',
+    '/api/v2/attendance/test/wifi-punch',
+    '/api/v2/attendance/test/corrections'
+  ].includes(pathname)) return true;
   const tasks = '/api/v2/operational-tasks';
   if (method === 'GET') {
     return pathname === tasks || pathname === tasks + '/inbox' ||
