@@ -7,6 +7,8 @@ import { resolveScopedPermission } from './scoped-permission';
 import { isLiveSuperAdmin } from './live-super-admin';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { AuthService } from '../modules/auth/auth.service';
+import { testDeviceDigest } from './employee-test-access';
+import { V2AttendanceService } from '../modules/v2-attendance/v2-attendance.service';
 
 const permission = 'operational-task:manage';
 const account = {
@@ -115,52 +117,106 @@ async function run() {
   assert.equal(await isLiveSuperAdmin(terminalAdminDb, 'employee'), false);
   const testPolicy = {
     enabled: true,
+    deviceDigest: '',
+    deviceExpiresAt: null as Date | null,
+    pairingDigest: null as string | null,
+    pairingExpiresAt: null as Date | null,
     storeId: 'zhonghai', updatedAt: new Date('2026-11-28T08:00:00Z')
   };
+  const employeeNo = 'BC-2026-001';
+  const realAccount = { id: 'test-account', employeeId: 'test-employee', username: account.username,
+    employee: { name: '正式员工', phone: account.username, employeeNo } };
+  let targetLookups = 0;
   const testDb = {
-    v2EmployeeTestAccess: { findUnique: async () => testPolicy },
+    ...terminalAdminDb,
+    loginLog: { create: async ({ data }: { data: { accountType: string } }) =>
+      assert.equal(data.accountType, 'V2_EMPLOYEE_TEST') },
+    v2Store: { findUniqueOrThrow: async () => ({ name: '中海国际店' }) },
+    v2EmployeeTestAccess: {
+      findFirst: async ({ where }: { where: { deviceDigest: string; deviceExpiresAt: { gt: Date } } }) =>
+        testPolicy.enabled && where.deviceDigest === testPolicy.deviceDigest &&
+        testPolicy.deviceExpiresAt && testPolicy.deviceExpiresAt > where.deviceExpiresAt.gt ? testPolicy : null,
+      updateMany: async ({ where, data }: {
+        where: { pairingDigest?: string; pairingExpiresAt?: { gt: Date } };
+        data: Partial<typeof testPolicy>;
+      }) => {
+        if (!testPolicy.enabled || (where.pairingDigest &&
+            (testPolicy.pairingDigest !== where.pairingDigest || !testPolicy.pairingExpiresAt ||
+             testPolicy.pairingExpiresAt <= where.pairingExpiresAt!.gt))) return { count: 0 };
+        Object.assign(testPolicy, data);
+        return { count: 1 };
+      }
+    },
     v2Account: {
-      findFirst: async ({ where }: { where: { id: string; dataScope: string; employee: { employeeNo: { startsWith: string } } } }) => {
+      ...terminalAdminDb.v2Account,
+      findMany: async ({ where }: { where: { OR: [{ username: string }, { employee: { employeeNo: string } }] } }) => {
+        targetLookups++;
+        return where.OR[0].username === realAccount.username ||
+          where.OR[1].employee.employeeNo === employeeNo ? [{ id: realAccount.id }] : [];
+      },
+      findFirst: async ({ where }: {
+        where: { id: string; dataScope: string; employee: { employments: { none: { storeId: { not: string } } } } };
+      }) => {
         assert.equal(where.dataScope, 'EMPLOYEE_STORE');
-        assert.equal(where.employee.employeeNo.startsWith, 'TEST-');
-        return where.id === 'test-account'
-          ? { id: where.id, employeeId: 'test-employee', username: account.username,
-              employee: { name: '测试员工', phone: account.username, employeeNo: 'TEST-001' } }
-          : null;
+        assert.equal(where.employee.employments.none.storeId.not, 'zhonghai');
+        return where.id === realAccount.id ? realAccount : null;
       }
     }
   } as unknown as PrismaService;
-  const testStrategy = new JwtStrategy(new ConfigService({ jwt: { secret: 'fixture' } }), testDb);
+  const config = new ConfigService({ jwt: { secret: 'fixture', refreshSecret: 'preview-fixture' } });
+  const jwt = new JwtService();
+  const auth = new AuthService(jwt, config, testDb);
+  const attendance = new V2AttendanceService(testDb, config, auth);
+  await assert.rejects(attendance.issueEmployeeTestPairing('employee'), /仅超级管理员/);
+  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'unknown'), /测试授权已失效/);
+  assert.equal(targetLookups, 0);
+  const { code } = await attendance.issueEmployeeTestPairing('legacy-admin');
+  assert.notEqual(testPolicy.pairingDigest, code);
+  const results = await Promise.allSettled([attendance.pairEmployeeTestDevice(code), attendance.pairEmployeeTestDevice(code)]);
+  const [paired, replay] = results;
+  assert.equal(paired.status, 'fulfilled');
+  assert.equal(replay.status, 'rejected');
+  const { token } = paired.value;
+  assert.equal(testPolicy.deviceDigest, testDeviceDigest(token));
+  const preview = await attendance.previewEmployeeTestAccount(employeeNo, token);
+  assert.equal(preview.name, realAccount.employee.name);
+  assert.equal(preview.storeName, '中海国际店');
+  assert.equal((await attendance.previewEmployeeTestAccount(realAccount.username, token)).name, preview.name);
+  await assert.rejects(attendance.previewEmployeeTestAccount('TEST-UNLISTED', token), /该账号未获准/);
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, 'another-device'), /预览已失效/);
+  const session = await attendance.confirmEmployeeTestPreview(preview.ticket, token);
+  assert.equal(session.user.id, realAccount.id);
+  assert.equal(session.refreshToken, '');
+  const testStrategy = new JwtStrategy(config, testDb);
   const testSessionRequest = { method: 'GET', originalUrl: '/api/auth/me' };
-  const testToken = {
-    ...oldToken, sub: 'test-account', username: 'TEST-001', employeeTestSession: true,
-    employeeTestPolicyVersion: testPolicy.updatedAt.toISOString()
-  };
+  const testToken = await jwt.verifyAsync<Parameters<JwtStrategy['validate']>[1]>(session.accessToken, { secret: 'fixture' });
   const testUser = await testStrategy.validate(testSessionRequest, testToken);
   assert.equal(testUser.employeeId, 'test-employee');
   assert.deepEqual(testUser.accessibleStoreIds, ['zhonghai']);
   assert.deepEqual(testUser.permissions, []);
-  assert.equal(testUser.username, 'TEST-001');
+  assert.equal(testUser.username, employeeNo);
   await assert.rejects(testStrategy.validate(testSessionRequest, { ...testToken, sub: 'regular-employee' }), /授权已失效/);
   for (const route of [
     { method: 'POST', originalUrl: '/api/auth/switch-store' },
-    { method: 'POST', originalUrl: '/api/v2/attendance/wechat/test-wifi-punch' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/wechat/wifi-punch' },
+    { method: 'POST', originalUrl: '/api/v2/operational-tasks/dispatch' }
+  ]) await assert.rejects(testStrategy.validate(route, testToken), /仅能使用/);
+  for (const route of [
     { method: 'GET', originalUrl: '/api/v2/operational-tasks/inbox' },
     { method: 'POST', originalUrl: '/api/v2/operational-tasks/production-task/submit' }
-  ]) await assert.rejects(testStrategy.validate(route, testToken), /仅能使用/);
-  const auth = new AuthService(new JwtService(), new ConfigService({
-    jwt: { secret: 'fixture', refreshSecret: 'preview-fixture' }
-  }), testDb);
-  const ticket = await auth.createEmployeeTestPreviewTicket('test-account', testPolicy.updatedAt.toISOString());
-  assert.equal((await auth.confirmEmployeeTestPreview(ticket)).user.id, 'test-account');
-  await assert.rejects(auth.confirmEmployeeTestPreview('invalid-ticket'), /预览已失效/);
-  testPolicy.enabled = false;
+  ]) assert.equal((await testStrategy.validate(route, testToken)).id, realAccount.id);
+  await assert.rejects(auth.confirmEmployeeTestPreview('invalid-ticket', token), /预览已失效/);
+  const originalExpiration = testPolicy.deviceExpiresAt;
+  testPolicy.deviceExpiresAt = new Date(0);
   await assert.rejects(testStrategy.validate(testSessionRequest, testToken), /授权已失效/);
-  await assert.rejects(auth.confirmEmployeeTestPreview(ticket), /测试账号不可用/);
+  testPolicy.deviceExpiresAt = originalExpiration;
+  await attendance.setEmployeeTestEnabled('legacy-admin', false);
+  await assert.rejects(testStrategy.validate(testSessionRequest, testToken), /授权已失效/);
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, token), /测试账号不可用/);
+  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, token), /测试授权已失效/);
   testPolicy.enabled = true;
-  testPolicy.updatedAt = new Date('2026-11-28T08:01:00Z');
   await assert.rejects(testStrategy.validate(testSessionRequest, testToken), /授权已失效/);
-  await assert.rejects(auth.confirmEmployeeTestPreview(ticket), /测试账号不可用/);
+  await assert.rejects(auth.confirmEmployeeTestPreview(preview.ticket, token), /测试账号不可用/);
   console.log('Explicit account role regression checks passed');
 }
 

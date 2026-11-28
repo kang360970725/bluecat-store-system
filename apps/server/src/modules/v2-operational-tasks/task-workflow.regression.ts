@@ -177,6 +177,55 @@ async function checkWechatMessage() {
   }
 }
 
+async function checkEmployeeTestTaskScope() {
+  const storeId = 'zhonghai';
+  const target = { storeId, targetKey: 'store:cashier' };
+  const db = {
+    $transaction: (action: (tx: unknown) => unknown) => action(db),
+    v2Account: {
+      findFirst: async ({ where }: { where: { mustChangePassword?: boolean } }) => {
+        assert.equal(where.mustChangePassword, undefined);
+        return { employeeId: 'employee', employee: { name: '员工' }, roles: [] };
+      }
+    },
+    v2Employment: {
+      findMany: async ({ where }: { where: { storeId: string } }) => {
+        assert.equal(where.storeId, storeId);
+        return [{ store: { id: storeId, name: '中海国际店' }, position: { id: 'cashier', name: '收银' } }];
+      }
+    },
+    v2OrganizationEmployment: { findMany: async () => [] },
+    v2OperationalTaskExecutorGroup: { findMany: async () => [] },
+    v2OperationalTask: {
+      findMany: async () => [],
+      findFirst: async ({ where }: { where: { id: string; storeId: string } }) => {
+        assert.equal(where.storeId, storeId);
+        return where.id === 'local-task' ? { ...target, id: where.id, status: 'PENDING' } : null;
+      }
+    },
+    v2Store: { findUniqueOrThrow: async () => ({ name: '中海国际店' }) },
+    v2OperationalTaskNotification: {
+      count: async () => 0,
+      findMany: async ({ where }: { where: { OR: { task: { OR: unknown[] } }[] } }) => {
+        assert.equal(where.OR.length, 1);
+        assert.deepEqual(where.OR[0].task.OR, [target]);
+        return [];
+      }
+    }
+  };
+  const config = new ConfigService();
+  const service = new V2OperationalTasksService(
+    db as unknown as PrismaService, config,
+    new TaskEvidenceObjectStorage(config), {} as V2AttendanceService
+  );
+  const list = await service.list('employee-account', { page: 1, assignedPage: 1 }, storeId);
+  assert.equal(list.canManage, false);
+  assert.equal(list.canReport, false);
+  await service.inbox('employee-account', storeId);
+  assert.equal((await service.assignedDetail('employee-account', 'local-task', storeId)).id, 'local-task');
+  await assert.rejects(service.assignedDetail('employee-account', 'other-store-task', storeId), /无权处理/);
+}
+
 async function main() {
   await checkWechatMessage();
   const legacy = normalizeChecklist(['门口整洁', '吧台无私人物品']);
@@ -217,6 +266,7 @@ async function main() {
     .png()
     .toBuffer();
   await checkPublishing(source);
+  await checkEmployeeTestTaskScope();
   const encoded = await encodeTaskEvidence(source);
   assert.ok(encoded.byteSize <= maxEncodedEvidenceFileSize);
   assert.ok(encoded.width <= 1440 && encoded.height <= 1440);

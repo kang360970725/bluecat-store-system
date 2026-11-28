@@ -307,10 +307,10 @@ export class V2OperationalTasksService
     }
   }
 
-  async inbox(accountId: string) {
+  async inbox(accountId: string, testStoreId?: string) {
     return this.prisma.$transaction(
       async (tx) => {
-        const where = await this.inboxScope(accountId, tx);
+        const where = await this.inboxScope(accountId, tx, testStoreId);
         const unread = await tx.v2OperationalTaskNotification.count({
           where: { ...where, readAt: null }
         });
@@ -337,9 +337,9 @@ export class V2OperationalTasksService
     );
   }
 
-  async readNotification(accountId: string, id: string) {
+  async readNotification(accountId: string, id: string, testStoreId?: string) {
     return this.write(async (tx) => {
-      const where = await this.inboxScope(accountId, tx);
+      const where = await this.inboxScope(accountId, tx, testStoreId);
       await tx.v2OperationalTaskNotification.updateMany({
         where: { ...where, id, readAt: null },
         data: { readAt: new Date() }
@@ -350,16 +350,17 @@ export class V2OperationalTasksService
 
   private async inboxScope(
     accountId: string,
-    tx: Prisma.TransactionClient
+    tx: Prisma.TransactionClient,
+    testStoreId?: string
   ): Promise<Prisma.V2OperationalTaskNotificationWhereInput> {
-    const account = await this.account(accountId, tx);
-    const access = await resolveScopedPermission(
+    const account = await this.account(accountId, tx, testStoreId);
+    const access = testStoreId ? null : await resolveScopedPermission(
       accountId,
       'operational-task:manage',
       tx
     );
     const targets = account.employeeId
-      ? await this.targets(account.employeeId, tx)
+      ? await this.targets(account.employeeId, tx, testStoreId)
       : [];
     const or: Prisma.V2OperationalTaskNotificationWhereInput[] = [];
     if (access) {
@@ -436,10 +437,10 @@ export class V2OperationalTasksService
       });
   }
 
-  async list(accountId: string, filters: TaskListFilters) {
-    const account = await this.account(accountId);
+  async list(accountId: string, filters: TaskListFilters, testStoreId?: string) {
+    const account = await this.account(accountId, this.prisma, testStoreId);
     const canReviewExtensions = account.superAdmin;
-    const [access, reportAccess] = await Promise.all([
+    const [access, reportAccess] = testStoreId ? [null, null] : await Promise.all([
       resolveScopedPermission(
         accountId,
         'operational-task:manage',
@@ -449,7 +450,7 @@ export class V2OperationalTasksService
     ]);
     const canReport = Boolean(reportAccess);
     const targets = account.employeeId
-      ? await this.targets(account.employeeId)
+      ? await this.targets(account.employeeId, this.prisma, testStoreId)
       : [];
     const available = targets.map(({ storeId, targetKey }) => ({
       storeId,
@@ -1803,28 +1804,26 @@ export class V2OperationalTasksService
     }
   }
 
-  async referenceImage(accountId: string, taskId: string, index: number) {
-    const access = await resolveScopedPermission(accountId, 'operational-task:manage', this.prisma);
+  async referenceImage(accountId: string, taskId: string, index: number, testStoreId?: string) {
+    const access = testStoreId ? null : await resolveScopedPermission(accountId, 'operational-task:manage', this.prisma);
     const task = await this.prisma.v2OperationalTask.findFirst({
-      where: { id: taskId, store: { deletedAt: null } },
+      where: { id: taskId, storeId: testStoreId, store: { deletedAt: null } },
       select: { createdBy: true, storeId: true, referenceImages: true }
     });
     if (!task) throw new ForbiddenException('照片不存在或无权查看');
-    if (
-      task.createdBy !== accountId &&
-      !(access && (!access.storeIds || access.storeIds.includes(task.storeId)))
-    ) {
-      await this.employeeTask(this.prisma, accountId, taskId);
-    } else {
+    const canManage = access && (!access.storeIds || access.storeIds.includes(task.storeId));
+    if (!testStoreId && (task.createdBy === accountId || canManage)) {
       await this.account(accountId);
+    } else {
+      await this.employeeTask(this.prisma, accountId, taskId, testStoreId);
     }
     const photo = Number.isInteger(index) && index >= 0 ? taskReferences(task.referenceImages)[index] : undefined;
     if (!photo) throw new ForbiddenException('照片不存在或无权查看');
     return this.objectStorage.get(photo.objectKey, photo.checksumSha256);
   }
 
-  async assignedDetail(accountId: string, taskId: string) {
-    const { task, employeeId } = await this.employeeTask(this.prisma, accountId, taskId);
+  async assignedDetail(accountId: string, taskId: string, testStoreId?: string) {
+    const { task, employeeId } = await this.employeeTask(this.prisma, accountId, taskId, testStoreId);
     if (task.status !== 'PENDING' && task.claimerId !== employeeId)
       throw new ForbiddenException('任务已由同组员工处理');
     const store = await this.prisma.v2Store.findUniqueOrThrow({
@@ -1836,8 +1835,8 @@ export class V2OperationalTasksService
       referenceImageCount, store };
   }
 
-  async evidence(accountId: string, taskId: string, evidenceId: string) {
-    const access = await resolveScopedPermission(
+  async evidence(accountId: string, taskId: string, evidenceId: string, testStoreId?: string) {
+    const access = testStoreId ? null : await resolveScopedPermission(
       accountId,
       'operational-task:manage',
       this.prisma
@@ -1856,7 +1855,8 @@ export class V2OperationalTasksService
       const { employeeId, task } = await this.employeeTask(
         this.prisma,
         accountId,
-        taskId
+        taskId,
+        testStoreId
       );
       if (task.claimerId !== employeeId)
         throw new ForbiddenException('无权查看任务照片');
@@ -1882,18 +1882,20 @@ export class V2OperationalTasksService
     accountId: string,
     taskId: string,
     photo: Buffer | undefined,
-    checklistItemId?: string
+    checklistItemId?: string,
+    testStoreId?: string
   ) {
     if (!photo) throw new BadRequestException('请选择照片');
     const encoded = await encodeTaskEvidence(photo);
-    await this.employeeTask(this.prisma, accountId, taskId);
+    await this.employeeTask(this.prisma, accountId, taskId, testStoreId);
     const stored = await this.objectStorage.put(encoded.image);
     try {
       const result = await this.write(async (tx) => {
         const { task, employeeId } = await this.employeeTask(
           tx,
           accountId,
-          taskId
+          taskId,
+          testStoreId
         );
         if (
           !['PENDING', 'CLAIMED'].includes(task.status) ||
@@ -1970,7 +1972,8 @@ export class V2OperationalTasksService
     issueText?: string,
     confirmedItemsText?: string,
     photoItemIdsText?: string,
-    evidenceDraftIdsText?: string
+    evidenceDraftIdsText?: string,
+    testStoreId?: string
   ) {
     const submission = text.trim();
     if (!submission) throw new BadRequestException('请填写完成说明');
@@ -1981,7 +1984,7 @@ export class V2OperationalTasksService
       throw new BadRequestException(
         '本次上传原图总量超过 24 MB，请压缩或减少照片'
       );
-    const before = await this.employeeTask(this.prisma, accountId, id);
+    const before = await this.employeeTask(this.prisma, accountId, id, testStoreId);
     if (
       (before.task.status === 'SUBMITTED' || before.task.status === 'DONE') &&
       before.task.claimerId === before.employeeId
@@ -2106,7 +2109,7 @@ export class V2OperationalTasksService
     }
     try {
       const outcome = await this.write(async (tx) => {
-        const { employeeId, task } = await this.employeeTask(tx, accountId, id);
+        const { employeeId, task } = await this.employeeTask(tx, accountId, id, testStoreId);
         if (
           (task.status === 'SUBMITTED' || task.status === 'DONE') &&
           task.claimerId === employeeId
@@ -2448,14 +2451,15 @@ export class V2OperationalTasksService
 
   private async account(
     accountId: string,
-    db: Prisma.TransactionClient = this.prisma
+    db: Prisma.TransactionClient = this.prisma,
+    testStoreId?: string
   ) {
     const account = await db.v2Account.findFirst({
       where: {
         id: accountId,
         status: 'ACTIVE',
         deletedAt: null,
-        mustChangePassword: false,
+        mustChangePassword: testStoreId ? undefined : false,
         OR: [{ employeeId: null }, { employee: activeEmployee }]
       },
       select: {
@@ -2597,17 +2601,18 @@ export class V2OperationalTasksService
   private async employeeTask(
     tx: Prisma.TransactionClient,
     accountId: string,
-    id: string
+    id: string,
+    testStoreId?: string
   ) {
-    const { employeeId, employeeName } = await this.account(accountId, tx);
+    const { employeeId, employeeName } = await this.account(accountId, tx, testStoreId);
     if (!employeeId || !employeeName)
       throw new ForbiddenException('需要有效员工身份');
     const task = await tx.v2OperationalTask.findFirst({
-      where: { id, store: operating }
+      where: { id, storeId: testStoreId, store: operating }
     });
     if (
       !task ||
-      !(await this.targets(employeeId, tx)).some(
+      !(await this.targets(employeeId, tx, testStoreId)).some(
         (target) => this.targetId(target) === this.targetId(task)
       )
     ) {

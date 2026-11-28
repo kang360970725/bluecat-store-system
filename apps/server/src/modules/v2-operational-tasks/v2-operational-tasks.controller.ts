@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Header,
   Param,
@@ -42,6 +43,12 @@ import {
   V2OperationalTasksService,
   type TaskListFilters
 } from './v2-operational-tasks.service';
+
+function employeeTestStore(user: CurrentUser) {
+  if (!user.employeeTestSession) return undefined;
+  if (!user.storeId) throw new ForbiddenException('测试门店不可用');
+  return user.storeId;
+}
 
 class TaskListDto implements TaskListFilters {
   @IsOptional()
@@ -376,7 +383,7 @@ export class V2OperationalTasksController {
   @Get()
   @Header('Cache-Control', 'no-store')
   list(@CurrentUserInfo() user: CurrentUser, @Query() query: TaskListDto) {
-    return this.tasks.list(user.id, query);
+    return this.tasks.list(user.id, query, employeeTestStore(user));
   }
 
   @Get('extensions')
@@ -434,7 +441,7 @@ export class V2OperationalTasksController {
   @Get('inbox')
   @Header('Cache-Control', 'no-store')
   inbox(@CurrentUserInfo() user: CurrentUser) {
-    return this.tasks.inbox(user.id);
+    return this.tasks.inbox(user.id, employeeTestStore(user));
   }
 
   @Post('inbox/:id/read')
@@ -442,7 +449,7 @@ export class V2OperationalTasksController {
     @CurrentUserInfo() user: CurrentUser,
     @Param('id') id: string
   ) {
-    return this.tasks.readNotification(user.id, id);
+    return this.tasks.readNotification(user.id, id, employeeTestStore(user));
   }
 
   @Get('targets')
@@ -546,7 +553,7 @@ export class V2OperationalTasksController {
     @Param('index') index: string,
     @Res() response: Response
   ) {
-    const image = await this.tasks.referenceImage(user.id, id, Number(index));
+    const image = await this.tasks.referenceImage(user.id, id, Number(index), employeeTestStore(user));
     response.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
     response.type('image/jpeg').send(Buffer.from(image));
   }
@@ -554,7 +561,7 @@ export class V2OperationalTasksController {
   @Get(':id/assigned-detail')
   @Header('Cache-Control', 'no-store')
   assignedDetail(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
-    return this.tasks.assignedDetail(user.id, id);
+    return this.tasks.assignedDetail(user.id, id, employeeTestStore(user));
   }
 
   @Post(':id/claim')
@@ -569,7 +576,7 @@ export class V2OperationalTasksController {
     @Param('evidenceId') evidenceId: string,
     @Res() response: Response
   ) {
-    const image = await this.tasks.evidence(user.id, id, evidenceId);
+    const image = await this.tasks.evidence(user.id, id, evidenceId, employeeTestStore(user));
     response.set({
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff'
@@ -591,7 +598,8 @@ export class V2OperationalTasksController {
       user.id,
       id,
       photo?.buffer,
-      body.checklistItemId
+      body.checklistItemId,
+      employeeTestStore(user)
     );
   }
 
@@ -616,7 +624,8 @@ export class V2OperationalTasksController {
       body.checklistIssues,
       body.confirmedItems,
       body.photoItemIds,
-      body.evidenceDraftIds
+      body.evidenceDraftIds,
+      employeeTestStore(user)
     );
   }
 

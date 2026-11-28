@@ -2680,6 +2680,10 @@ model V2EmployeeTestAccess {
   targetAccountIds  Json     @map("target_account_ids")
   updatedBy         String   @map("updated_by") @db.VarChar(191)
   updatedAt         DateTime @updatedAt @map("updated_at")
+  pairingDigest     String?  @map("pairing_digest") @db.Char(64)
+  pairingExpiresAt  DateTime? @map("pairing_expires_at")
+  deviceDigest      String?  @map("device_digest") @db.Char(64)
+  deviceExpiresAt   DateTime? @map("device_expires_at")
 
   @@map("v2_employee_test_access")
 }

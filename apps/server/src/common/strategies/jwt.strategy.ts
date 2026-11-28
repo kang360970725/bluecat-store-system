@@ -12,6 +12,7 @@ type JwtPayload = CurrentUser & {
   sub: string;
   employeeTestOperatorSubject?: string;
   employeeTestPolicyVersion?: string;
+  employeeTestDeviceDigest?: string;
 };
 
 @Injectable()
@@ -26,10 +27,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(request: Pick<Request, 'method' | 'originalUrl'>, payload: JwtPayload): Promise<CurrentUser> {
-    if (payload.employeeTestSession || payload.employeeTestOperatorSubject) {
+    if (payload.employeeTestSession || payload.employeeTestOperatorSubject || payload.employeeTestDeviceDigest) {
       if (!employeeTestRouteAllowed(request.method, request.originalUrl.split('?')[0]))
         throw new UnauthorizedException('测试身份仅能使用演练功能');
-      const target = await activeTestTarget(this.prisma, payload.sub);
+      const target = payload.employeeTestDeviceDigest
+        ? await activeTestTarget(this.prisma, payload.sub, payload.employeeTestDeviceDigest)
+        : null;
       if (!target || target.employeeNo !== payload.username || target.policyVersion !== payload.employeeTestPolicyVersion)
         throw new UnauthorizedException('测试账号授权已失效');
       return {
