@@ -122,28 +122,25 @@ export class AuthService {
     return this.loginV2({ accountId, wechatBoundAt }, {});
   }
 
-  async openEmployeeTestSession(accountId: string, operatorSubject: string, expectedPolicyVersion?: string): Promise<LoginResult> {
-    const target = await activeTestTarget(this.prisma, accountId, operatorSubject);
-    if (!target || (expectedPolicyVersion && expectedPolicyVersion !== target.policyVersion))
+  private async openEmployeeTestSession(accountId: string, expectedPolicyVersion: string): Promise<LoginResult> {
+    const target = await activeTestTarget(this.prisma, accountId);
+    if (!target || expectedPolicyVersion !== target.policyVersion)
       throw new UnauthorizedException('测试账号不可用，请重新查询');
     const user: CurrentUser = {
-      id: target.id, username: target.username, nickname: target.employee?.name ?? '',
+      id: target.id, username: target.employeeNo, nickname: target.name,
       employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
       accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true
     };
     const accessToken = await this.jwtService.signAsync(
-      { ...user, sub: user.id, employeeTestOperatorSubject: operatorSubject, employeeTestPolicyVersion: target.policyVersion },
+      { ...user, sub: user.id, employeeTestPolicyVersion: target.policyVersion },
       { secret: this.config.getOrThrow<string>('jwt.secret'), expiresIn: '30m' }
     );
-    await this.prisma.loginLog.create({
-      data: { accountType: 'V2_EMPLOYEE_TEST', accountId: user.id, username: user.username, displayName: user.nickname }
-    });
     return { accessToken, refreshToken: '', expiresIn: 1800, user };
   }
 
-  createEmployeeTestPreviewTicket(accountId: string, operatorSubject: string, policyVersion: string) {
+  createEmployeeTestPreviewTicket(accountId: string, policyVersion: string) {
     return this.jwtService.signAsync(
-      { sub: accountId, operatorSubject, policyVersion },
+      { sub: accountId, policyVersion },
       {
         secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
         audience: 'employee-test-preview',
@@ -153,7 +150,7 @@ export class AuthService {
   }
 
   async confirmEmployeeTestPreview(ticket: string): Promise<LoginResult> {
-    let preview: { sub: string; operatorSubject: string; policyVersion: string };
+    let preview: { sub: string; policyVersion: string };
     try {
       preview = await this.jwtService.verifyAsync(ticket, {
         secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
@@ -162,7 +159,9 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('预览已失效，请重新查询测试账号');
     }
-    return this.openEmployeeTestSession(preview.sub, preview.operatorSubject, preview.policyVersion);
+    if (typeof preview.sub !== 'string' || typeof preview.policyVersion !== 'string')
+      throw new UnauthorizedException('预览已失效，请重新查询测试账号');
+    return this.openEmployeeTestSession(preview.sub, preview.policyVersion);
   }
 
   private async loginV2(

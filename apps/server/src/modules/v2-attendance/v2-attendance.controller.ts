@@ -43,16 +43,10 @@ class TaskSubscriptionDto extends WechatDto {
   templateId!: string;
 }
 
-class EmployeeTestLookupDto extends WechatDto {
+class EmployeeTestLookupDto {
   @IsString()
   @Length(1, 100)
   identifier!: string;
-}
-
-class EmployeeTestConfirmDto extends WechatDto {
-  @IsString()
-  @Length(1, 100)
-  accountId!: string;
 }
 
 class EmployeeTestEnabledDto {
@@ -258,7 +252,7 @@ export class V2AttendanceController {
   @Post('wechat/test-preview')
   @Header('Cache-Control', 'no-store')
   employeeTestPreview(@Body() body: EmployeeTestLookupDto) {
-    return this.attendance.previewEmployeeTestAccount(body.wechatCode, body.identifier);
+    return this.attendance.previewEmployeeTestAccount(body.identifier);
   }
 
   @Patch('settings/employee-test-access')
@@ -267,37 +261,10 @@ export class V2AttendanceController {
     return this.attendance.setEmployeeTestEnabled(user.id, body.enabled);
   }
 
-  @Post('wechat/test-confirm')
-  @Header('Cache-Control', 'no-store')
-  employeeTestConfirm(@Body() body: EmployeeTestConfirmDto) {
-    return this.attendance.openEmployeeTestAccount(body.wechatCode, body.accountId);
-  }
-
   @Post('wechat/test-confirm-preview')
   @Header('Cache-Control', 'no-store')
   employeeTestConfirmPreview(@Body() body: EmployeeTestTicketDto) {
     return this.attendance.confirmEmployeeTestPreview(body.ticket);
-  }
-
-  @Post('wechat/test-assignments')
-  @Header('Cache-Control', 'no-store')
-  @UseGuards(JwtAuthGuard)
-  testAssignments(@CurrentUserInfo() user: CurrentUser, @Body() body: AssignmentsDto) {
-    return this.attendance.assignments(body.wechatCode, body.workDate, user);
-  }
-
-  @Post('wechat/test-wifi-punch')
-  @UseGuards(JwtAuthGuard)
-  testWifiPunch(@CurrentUserInfo() user: CurrentUser, @Body() body: WifiPunchDto) {
-    return this.attendance.wifiPunch(body.wechatCode, body.assignmentId, body.bssid, body.kind, user);
-  }
-
-  @Post('wechat/test-corrections')
-  @UseGuards(JwtAuthGuard)
-  testCorrection(@CurrentUserInfo() user: CurrentUser, @Body() body: CorrectionDto) {
-    return this.attendance.requestCorrection(
-      body.wechatCode, body.assignmentId, body.kind, body.requestedTime, body.reason, user
-    );
   }
 
   @Post('wechat/task-subscription')

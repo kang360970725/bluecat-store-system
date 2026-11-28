@@ -1,5 +1,4 @@
 import type { Prisma } from '@prisma/client';
-import { resolveScopedPermission } from './scoped-permission';
 
 const employeeTestAccount = { status: 'ACTIVE', deletedAt: null } as const;
 export const employeeTestNumberPrefix = 'TEST-';
@@ -28,48 +27,25 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
   };
 }
 
-export async function employeeTestOperator(db: Prisma.TransactionClient, operatorSubject: string, storeId: string) {
-  const binding = await db.v2AttendanceWechatBinding.findFirst({
-    where: {
-      subject: operatorSubject,
-      account: {
-        ...employeeTestAccount, mustChangePassword: false,
-        employee: { status: 'ACTIVE', deletedAt: null }
-      }
-    },
-    select: { accountId: true }
-  });
-  if (!binding) return false;
-  const access = await resolveScopedPermission(binding.accountId, 'schedule:update', db);
-  return Boolean(access && (!access.storeIds || access.storeIds.includes(storeId)));
-}
-
 export async function activeTestTarget(
   db: Prisma.TransactionClient,
-  targetId: string,
-  operatorSubject: string
+  targetId: string
 ) {
   const config = await db.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
-  if (!config?.enabled || !(await employeeTestOperator(db, operatorSubject, config.storeId))) return null;
+  if (!config?.enabled) return null;
   const target = await db.v2Account.findFirst({
     where: { id: targetId, ...testTargetScope(config.storeId) },
-    select: { id: true, username: true, employeeId: true, employee: { select: { name: true, phone: true } } }
+    select: { id: true, username: true, employeeId: true, employee: { select: { name: true, phone: true, employeeNo: true } } }
   });
-  if (!target?.employeeId || target.employee?.phone !== target.username) return null;
+  if (!target?.employeeId || target.employee?.phone !== target.username ||
+      !target.employee.employeeNo.toUpperCase().startsWith(employeeTestNumberPrefix)) return null;
   return {
-    ...target, employeeId: target.employeeId, storeId: config.storeId,
+    id: target.id, employeeNo: target.employee.employeeNo, name: target.employee.name,
+    employeeId: target.employeeId, storeId: config.storeId,
     policyVersion: config.updatedAt.toISOString()
   };
 }
 
 export function employeeTestRouteAllowed(method: string, pathname: string) {
-  if (method === 'GET' && pathname === '/api/auth/me') return true;
-  if (method === 'POST' && /^\/api\/v2\/attendance\/wechat\/test-(assignments|wifi-punch|corrections)$/.test(pathname))
-    return true;
-  const base = '/api/v2/operational-tasks';
-  if (method === 'GET') {
-    return pathname === base || pathname === base + '/inbox' ||
-      new RegExp('^' + base + '/[^/]+/(assigned-detail|references/[0-2]|evidence/[^/]+)$').test(pathname);
-  }
-  return method === 'POST' && new RegExp('^' + base + '/([^/]+/(submit|evidence-drafts)|inbox/[^/]+/read)$').test(pathname);
+  return method === 'GET' && pathname === '/api/auth/me';
 }

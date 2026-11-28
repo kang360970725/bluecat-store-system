@@ -155,7 +155,7 @@ onMounted(() => void run(async () => {
         <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy" @update:value="toggleTestAccess" />
         <span role="status">{{ testEnabled ? '已开启' : '已关闭' }}</span>
       </n-space>
-      <p class="mt-3">开关即时生效，保持开启直到手动关闭。已绑定微信的门店排班管理人员可切换员工编号以 TEST- 开头的测试账号。</p>
+      <p class="mt-3">开启后可在小程序输入 TEST- 员工编号预览并切换。演练可试用任务与消息，考勤功能暂停，关闭后测试身份立即失效。</p>
     </n-card>
     <n-alert v-if="errorMessage" type="error">{{ errorMessage }}</n-alert>
   </section>

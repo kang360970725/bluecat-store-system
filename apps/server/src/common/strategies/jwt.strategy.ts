@@ -27,14 +27,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(request: Pick<Request, 'method' | 'originalUrl'>, payload: JwtPayload): Promise<CurrentUser> {
     if (payload.employeeTestSession || payload.employeeTestOperatorSubject) {
-      const subject = payload.employeeTestOperatorSubject;
-      if (!subject || !employeeTestRouteAllowed(request.method, request.originalUrl.split('?')[0]))
-        throw new UnauthorizedException('测试会话仅能使用员工小程序功能');
-      const target = await activeTestTarget(this.prisma, payload.sub, subject);
-      if (!target || target.username !== payload.username || target.policyVersion !== payload.employeeTestPolicyVersion)
+      if (!employeeTestRouteAllowed(request.method, request.originalUrl.split('?')[0]))
+        throw new UnauthorizedException('测试身份仅能使用演练功能');
+      const target = await activeTestTarget(this.prisma, payload.sub);
+      if (!target || target.employeeNo !== payload.username || target.policyVersion !== payload.employeeTestPolicyVersion)
         throw new UnauthorizedException('测试账号授权已失效');
       return {
-        id: target.id, username: target.username, nickname: target.employee?.name ?? '',
+        id: target.id, username: target.employeeNo, nickname: target.name,
         employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
         accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true
       };

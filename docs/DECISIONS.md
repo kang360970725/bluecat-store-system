@@ -142,7 +142,7 @@ This is the current business-rule register. New decisions are appended with a da
 
 ## Independent employee mini-program (2026-11-12)
 
-- Zhonghai International test switching is disabled by default and remains enabled until a super administrator turns it off. Users with a bound WeChat account and live scheduling management access to the store may preview dedicated store-only test identities marked with the `TEST-` employee-number prefix. The preview confirms name and store and supplies a short-lived ticket, so confirmation needs no second WeChat exchange. Test sessions are restricted to mini-program attendance and assigned-task endpoints, expire separately from the mode and leave permanent bindings intact.
+- Zhonghai International test switching is disabled by default and remains enabled until a super administrator turns it off. While enabled, the mini program can preview dedicated store-only identities by exact `TEST-` employee number without a WeChat binding. The preview returns the test name, store and a short-lived confirmation ticket. Test sessions can only validate their status on the server. The mini program provides temporary local task and inbox fixtures and disables attendance. Test records, photos and submissions do not enter production task or attendance storage.
 
 - Register a separate WeChat mini-program. Use Taro with Vue 3 and TypeScript and share the Store V2 backend and permissions with Web.
 - The mini-program will cover the existing Web business content and management functions in phases, starting with employee attendance and tasks. The mobile interface may adapt navigation, lists and forms while preserving business rules and access controls.
