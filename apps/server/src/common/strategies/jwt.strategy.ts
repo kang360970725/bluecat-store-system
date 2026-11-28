@@ -13,7 +13,6 @@ type JwtPayload = CurrentUser & {
   employeeTestOperatorSubject?: string;
   employeeTestPolicyVersion?: string;
   employeeTestDeviceDigest?: string;
-  employeeTestAuthorizedBy?: string;
 };
 
 @Injectable()
@@ -39,7 +38,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       return {
         id: target.id, username: target.employeeNo, nickname: target.name,
         employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
-        accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true
+        accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true,
+        employeeTestAuthorizedBy: payload.employeeTestAuthorizedBy
       };
     }
     if (payload.wechatBoundAt && !(await this.prisma.v2AttendanceWechatBinding.findFirst({

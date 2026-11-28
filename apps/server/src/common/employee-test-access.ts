@@ -62,6 +62,11 @@ export async function activeTestTarget(
 
 export function employeeTestRouteAllowed(method: string, pathname: string) {
   if (method === 'GET' && pathname === '/api/auth/me') return true;
+  if (method === 'POST' && [
+    '/api/v2/attendance/test/assignments',
+    '/api/v2/attendance/test/wifi-punch',
+    '/api/v2/attendance/test/corrections'
+  ].includes(pathname)) return true;
   const tasks = '/api/v2/operational-tasks';
   if (method === 'GET') {
     return pathname === tasks || pathname === tasks + '/inbox' ||

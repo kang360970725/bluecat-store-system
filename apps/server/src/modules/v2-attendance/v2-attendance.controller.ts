@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Header,
   Param,
@@ -10,6 +11,7 @@ import {
   Res,
   UseGuards
 } from '@nestjs/common';
+import { IntersectionType } from '@nestjs/swagger';
 import type { Response } from 'express';
 import { Type } from 'class-transformer';
 import type { CurrentUser } from '@bluecat/shared';
@@ -70,7 +72,7 @@ class BindDto extends WechatDto {
   password!: string;
 }
 
-class WifiPunchDto extends WechatDto {
+class TestWifiPunchDto {
   @IsString()
   @Length(1, 100)
   assignmentId!: string;
@@ -81,6 +83,8 @@ class WifiPunchDto extends WechatDto {
   @Matches(/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i)
   bssid!: string;
 }
+
+class WifiPunchDto extends IntersectionType(WechatDto, TestWifiPunchDto) {}
 
 class WifiNetworkDto {
   @Matches(/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i)
@@ -100,12 +104,14 @@ class WifiNetworksDto {
   networks!: WifiNetworkDto[];
 }
 
-class AssignmentsDto extends WechatDto {
+class TestAssignmentsDto {
   @IsOptional()
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
   @IsISO8601({ strict: true })
   workDate?: string;
 }
+
+class AssignmentsDto extends IntersectionType(WechatDto, TestAssignmentsDto) {}
 
 class RecordsDto {
   @Matches(/^\d{4}-\d{2}-\d{2}$/)
@@ -140,7 +146,7 @@ class CorrectionsQueryDto {
   mode?: 'PENDING' | 'HISTORY';
 }
 
-class CorrectionDto extends WechatDto {
+class TestCorrectionDto {
   @IsString()
   @Length(1, 100)
   assignmentId!: string;
@@ -156,6 +162,8 @@ class CorrectionDto extends WechatDto {
   @Length(1, 500)
   reason!: string;
 }
+
+class CorrectionDto extends IntersectionType(WechatDto, TestCorrectionDto) {}
 
 class ReviewDto {
   @IsBoolean()
@@ -306,6 +314,35 @@ export class V2AttendanceController {
       body.requestedTime,
       body.reason
     );
+  }
+
+  @Post('test/assignments')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  testAssignments(@CurrentUserInfo() user: CurrentUser, @Body() body: TestAssignmentsDto) {
+    return this.attendance.assignments(this.testAttendanceLogin(user), body.workDate);
+  }
+
+  @Post('test/wifi-punch')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  testWifiPunch(@CurrentUserInfo() user: CurrentUser, @Body() body: TestWifiPunchDto) {
+    return this.attendance.wifiPunch(this.testAttendanceLogin(user), body.assignmentId, body.bssid, body.kind);
+  }
+
+  @Post('test/corrections')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  testRequestCorrection(@CurrentUserInfo() user: CurrentUser, @Body() body: TestCorrectionDto) {
+    return this.attendance.requestCorrection(
+      this.testAttendanceLogin(user), body.assignmentId, body.kind, body.requestedTime, body.reason
+    );
+  }
+
+  private testAttendanceLogin(user: CurrentUser) {
+    if (!user.employeeTestSession || !user.employeeId || !user.storeId || !user.employeeTestAuthorizedBy)
+      throw new ForbiddenException('请先切换到门店验收员工账号');
+    return { employeeId: user.employeeId, storeId: user.storeId, operatorId: user.employeeTestAuthorizedBy };
   }
 
   @Get('records')

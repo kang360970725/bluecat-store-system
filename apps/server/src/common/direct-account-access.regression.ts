@@ -202,6 +202,7 @@ async function run() {
   assert.deepEqual(testUser.accessibleStoreIds, ['zhonghai']);
   assert.deepEqual(testUser.permissions, []);
   assert.equal(testUser.username, employeeNo);
+  assert.equal(testUser.employeeTestAuthorizedBy, operatorId);
   await assert.rejects(testStrategy.validate(testSessionRequest, { ...testToken, sub: 'regular-employee' }), /授权已失效/);
   for (const route of [
     { method: 'POST', originalUrl: '/api/auth/switch-store' },
@@ -211,6 +212,9 @@ async function run() {
   ]) await assert.rejects(testStrategy.validate(route, testToken), /仅能使用/);
   for (const route of [
     { method: 'GET', originalUrl: '/api/v2/operational-tasks/inbox' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/test/assignments' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/test/wifi-punch' },
+    { method: 'POST', originalUrl: '/api/v2/attendance/test/corrections' },
     { method: 'POST', originalUrl: '/api/v2/operational-tasks/production-task/submit' }
   ]) assert.equal((await testStrategy.validate(route, testToken)).id, realAccount.id);
   await assert.rejects(auth.confirmEmployeeTestPreview('invalid-ticket', operatorId), /预览已失效/);
