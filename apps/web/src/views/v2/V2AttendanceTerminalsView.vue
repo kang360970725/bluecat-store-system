@@ -23,8 +23,10 @@ const busy = ref(false);
 const testPath = settingsPath + '/employee-test-access';
 interface EmployeeTestSettings {
   enabled: boolean;
+  operatorPhone?: string;
 }
 const testEnabled = ref(false);
+const testOperatorPhone = ref('');
 const testSettingsLoaded = ref(false);
 
 function applySettings(value: AttendanceSettings) {
@@ -77,7 +79,7 @@ function toggleTestAccess(enabled: boolean) {
   void run(async () => {
     const value = await request<EmployeeTestSettings>(testPath, {
       method: 'PATCH',
-      body: JSON.stringify({ enabled })
+      body: JSON.stringify({ enabled, ...(enabled ? { operatorPhone: testOperatorPhone.value.trim() } : {}) })
     });
     testEnabled.value = value.enabled;
   });
@@ -85,7 +87,9 @@ function toggleTestAccess(enabled: boolean) {
 
 onMounted(() => void run(async () => {
   applySettings(await request<AttendanceSettings>(settingsPath));
-  testEnabled.value = (await request<EmployeeTestSettings>(testPath)).enabled;
+  const testSettings = await request<EmployeeTestSettings>(testPath);
+  testEnabled.value = testSettings.enabled;
+  testOperatorPhone.value = testSettings.operatorPhone ?? '';
   testSettingsLoaded.value = true;
 }));
 </script>
@@ -151,11 +155,14 @@ onMounted(() => void run(async () => {
       </n-form>
     </n-card>
     <n-card v-if="testSettingsLoaded" title="中海国际店测试模式" size="small">
+      <n-form-item label="测试人员登录手机号">
+        <n-input v-model:value="testOperatorPhone" maxlength="11" :disabled="busy || testEnabled" />
+      </n-form-item>
       <n-space align="center">
-        <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy" @update:value="toggleTestAccess" />
+        <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy || (!testEnabled && !/^1[3-9]\d{9}$/.test(testOperatorPhone.trim()))" @update:value="toggleTestAccess" />
         <span role="status">{{ testEnabled ? '已开启' : '已关闭' }}</span>
       </n-space>
-      <p class="mt-3">开启后，超级管理员可在小程序使用员工编号或手机号切换本店员工。测试期间可提交实际任务，考勤停用。关闭后，员工绑定和切换恢复账号密码验证。</p>
+      <p class="mt-3">开启后，指定员工用自己的账号登录一次，即可用员工编号或手机号切换本店员工。测试期间可提交实际任务，考勤停用。关闭后，员工绑定和切换恢复账号密码验证。</p>
     </n-card>
     <n-alert v-if="errorMessage" type="error">{{ errorMessage }}</n-alert>
   </section>

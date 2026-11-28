@@ -33,7 +33,7 @@ Last updated: 2026-11-28
 
 ## In progress: employee mini-program attendance
 
-- The next Zhonghai test-switch version uses the logged-in super administrator's session to preview and switch to eligible active store employees by exact employee number or login phone. There is no QR pairing or new migration. Tests use live assigned tasks and employee inbox messages for Zhonghai only. Turning off the switch revokes test previews and sessions. Production deployment and real-device acceptance are pending.
+- The next Zhonghai test-switch version uses one designated employee's authenticated session to preview and switch to eligible active store employees by exact employee number or login phone. There is no QR pairing or new migration. Tests use live assigned tasks and employee inbox messages for Zhonghai only. Turning off the switch revokes test previews and sessions. Production deployment and real-device acceptance are pending.
 
 - The Zhonghai test-switch update from `acc51580` is live. It replaces manual operator and account lists with a persistent super-admin switch. Eligibility comes from existing scoped scheduling access and dedicated `TEST-` employee numbers. Super administrators can create a dedicated Zhonghai account in the existing new-employee form. Mini-program confirmation uses one WeChat exchange and preserves the current account if switching is cancelled. This was an application-only release with all 73 database migrations already current. The verified rollback backup is `/opt/bluecat-store-system/.release-backups/direct-test-before-acc51580.G4ryJU`. Public Web asset and server hashes matched the build, API authorization and input validation passed, and PM2 was stable after a brief 502 during reload.
 

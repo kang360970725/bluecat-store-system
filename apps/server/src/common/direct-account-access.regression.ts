@@ -115,8 +115,8 @@ async function run() {
   assert.equal(await isLiveSuperAdmin(terminalAdminDb, 'legacy-admin'), true);
   assert.equal(await isLiveSuperAdmin(terminalAdminDb, 'employee'), false);
   const testPolicy = {
-    enabled: true,
-    storeId: 'zhonghai', updatedAt: new Date('2026-11-28T08:00:00Z')
+    enabled: false,
+    storeId: 'zhonghai', operatorAccountId: 'tester', updatedAt: new Date('2026-11-28T08:00:00Z')
   };
   const employeeNo = 'BC-2026-001';
   const realAccount = { id: 'test-account', employeeId: 'test-employee', username: account.username,
@@ -124,15 +124,15 @@ async function run() {
   let targetLookups = 0;
   let operatorEnabled = true;
   const testDb = {
-    user: {
-      findFirst: async (query: Parameters<PrismaService['user']['findFirst']>[0]) =>
-        operatorEnabled ? terminalAdminDb.user.findFirst(query) : null
-    },
+    user: terminalAdminDb.user,
     v2AuthorizationAudit: { create: async ({ data }: { data: { subject: string; actorId: string } }) => {
       assert.equal(data.subject, 'EMPLOYEE_TEST_SESSION');
-      assert.equal(data.actorId, 'legacy-admin');
+      assert.equal(data.actorId, 'tester');
     } },
-    v2Store: { findUniqueOrThrow: async () => ({ name: '中海国际店' }) },
+    v2Store: {
+      findUniqueOrThrow: async () => ({ name: '中海国际店' }),
+      findMany: async () => [{ id: 'zhonghai' }]
+    },
     v2EmployeeTestAccess: {
       findUnique: async () => testPolicy,
       updateMany: async ({ data }: { data: Partial<typeof testPolicy> }) => {
@@ -140,6 +140,11 @@ async function run() {
         Object.assign(testPolicy, data);
         testPolicy.updatedAt = new Date(testPolicy.updatedAt.getTime() + 1);
         return { count: 1 };
+      },
+      upsert: async ({ update }: { update: Partial<typeof testPolicy> }) => {
+        assert.equal(update.operatorAccountId, 'tester');
+        Object.assign(testPolicy, update);
+        return testPolicy;
       }
     },
     v2Account: {
@@ -150,8 +155,10 @@ async function run() {
           where.AND.employee?.employeeNo === employeeNo ? [{ id: realAccount.id }] : [];
       },
       findFirst: async ({ where }: {
-        where: { id: string; dataScope: string; employee: { employments: { none: { storeId: { not: string } } } } };
+        where: { id: string; username?: string; dataScope: string; employee: { employments: { none: { storeId: { not: string } } } } };
       }) => {
+        if (where.username) return where.username === '13800000009' ? { id: 'tester' } : null;
+        if (where.id === 'tester') return operatorEnabled ? { id: 'tester' } : null;
         assert.equal(where.dataScope, 'EMPLOYEE_STORE');
         assert.equal(where.employee.employments.none.storeId.not, 'zhonghai');
         return where.id === realAccount.id ? realAccount : null;
@@ -162,9 +169,14 @@ async function run() {
   const jwt = new JwtService();
   const auth = new AuthService(jwt, config, testDb);
   const attendance = new V2AttendanceService(testDb, config, auth);
+  await assert.rejects(attendance.setEmployeeTestEnabled('tester', true, '13800000009'), /仅超级管理员/);
+  await assert.rejects(attendance.setEmployeeTestEnabled('legacy-admin', true), /请填写/);
+  await assert.rejects(attendance.setEmployeeTestEnabled('legacy-admin', true, '13800000008'), /请选择/);
+  await attendance.setEmployeeTestEnabled('legacy-admin', true, '13800000009');
   await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'ordinary-employee'), /无测试权限/);
+  await assert.rejects(attendance.previewEmployeeTestAccount(employeeNo, 'legacy-admin'), /无测试权限/);
   assert.equal(targetLookups, 0);
-  const operatorId = 'legacy-admin';
+  const operatorId = 'tester';
   const preview = await attendance.previewEmployeeTestAccount(employeeNo, operatorId);
   assert.equal(preview.name, realAccount.employee.name);
   assert.equal(preview.storeName, '中海国际店');

@@ -52,6 +52,10 @@ class EmployeeTestLookupDto {
 class EmployeeTestEnabledDto {
   @IsBoolean()
   enabled!: boolean;
+
+  @IsOptional()
+  @Matches(/^1[3-9]\d{9}$/)
+  operatorPhone?: string;
 }
 
 class EmployeeTestTicketDto {
@@ -259,7 +263,7 @@ export class V2AttendanceController {
   @Patch('settings/employee-test-access')
   @UseGuards(JwtAuthGuard)
   setEmployeeTestEnabled(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestEnabledDto) {
-    return this.attendance.setEmployeeTestEnabled(user.id, body.enabled);
+    return this.attendance.setEmployeeTestEnabled(user.id, body.enabled, body.operatorPhone);
   }
 
   @Post('wechat/test-confirm-preview')

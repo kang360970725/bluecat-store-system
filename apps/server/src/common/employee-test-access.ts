@@ -1,5 +1,4 @@
 import type { Prisma } from '@prisma/client';
-import { isLiveSuperAdmin } from './live-super-admin';
 
 const employeeTestAccount = { status: 'ACTIVE', deletedAt: null } as const;
 export const employeeTestNumberPrefix = 'TEST-';
@@ -33,9 +32,20 @@ export function testTargetScope(storeId: string): Prisma.V2AccountWhereInput {
   };
 }
 
+export const employeeTestOperatorScope = {
+  ...employeeTestAccount,
+  mustChangePassword: false,
+  employee: employeeTestAccount
+} satisfies Prisma.V2AccountWhereInput;
+
 export async function activeEmployeeTestAccess(db: Prisma.TransactionClient, operatorId: string) {
   const config = await db.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
-  return config?.enabled && await isLiveSuperAdmin(db, operatorId) ? config : null;
+  if (!config?.enabled || config.operatorAccountId !== operatorId) return null;
+  const operator = await db.v2Account.findFirst({
+    where: { id: operatorId, ...employeeTestOperatorScope },
+    select: { id: true }
+  });
+  return operator ? config : null;
 }
 
 export async function activeTestTarget(

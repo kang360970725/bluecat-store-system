@@ -21,7 +21,7 @@ import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import { resolveScopedPermission } from '../../common/scoped-permission';
 import { PrismaService } from '../../database/prisma.service';
 import {
-  activeEmployeeTestAccess, activeTestTarget, employeeTestStoreName, testTargetScope
+  activeEmployeeTestAccess, activeTestTarget, employeeTestOperatorScope, employeeTestStoreName, testTargetScope
 } from '../../common/employee-test-access';
 import {
   digest,
@@ -299,12 +299,16 @@ export class V2AttendanceService {
   async employeeTestSettings(adminId: string) {
     await this.requireAdmin(adminId);
     const settings = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
-    return {
-      enabled: settings?.enabled ?? false
-    };
+    const operator = settings?.operatorAccountId
+      ? await this.prisma.v2Account.findFirst({
+          where: { id: settings.operatorAccountId, ...employeeTestOperatorScope },
+          select: { username: true }
+        })
+      : null;
+    return { enabled: settings?.enabled ?? false, operatorPhone: operator?.username ?? '' };
   }
 
-  async setEmployeeTestEnabled(adminId: string, enabled: boolean) {
+  async setEmployeeTestEnabled(adminId: string, enabled: boolean, operatorPhone?: string) {
     await this.requireAdmin(adminId);
     if (!enabled) {
       await this.prisma.v2EmployeeTestAccess.updateMany({
@@ -313,15 +317,21 @@ export class V2AttendanceService {
       });
       return { enabled: false };
     }
+    if (!operatorPhone) throw new BadRequestException('请填写测试人员的登录手机号');
+    const operator = await this.prisma.v2Account.findFirst({
+      where: { username: operatorPhone, ...employeeTestOperatorScope },
+      select: { id: true }
+    });
+    if (!operator) throw new BadRequestException('请选择已启用且已完成初始密码设置的员工账号');
     const stores = await this.prisma.v2Store.findMany({
       where: { ...operatingStore, name: { contains: employeeTestStoreName } },
       select: { id: true }, take: 2
     });
     if (stores.length !== 1) throw new BadRequestException('无法唯一识别中海国际店');
-    const data = { enabled: true, storeId: stores[0].id, updatedBy: adminId };
+    const data = { enabled: true, storeId: stores[0].id, operatorAccountId: operator.id, updatedBy: adminId };
     await this.prisma.v2EmployeeTestAccess.upsert({
       where: { id: 1 },
-      create: { id: 1, ...data, operatorAccountId: '', targetAccountIds: [] },
+      create: { id: 1, ...data, targetAccountIds: [] },
       update: data
     });
     return { enabled: true };
