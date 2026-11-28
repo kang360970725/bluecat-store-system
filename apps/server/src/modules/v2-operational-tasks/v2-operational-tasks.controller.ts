@@ -1,6 +1,8 @@
 import {
+  BadRequestException,
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Header,
   Param,
@@ -15,7 +17,7 @@ import {
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import type { CurrentUser } from '@bluecat/shared';
-import { Type } from 'class-transformer';
+import { Transform, Type, plainToInstance } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -36,11 +38,17 @@ import {
 import { CurrentUserInfo } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import type { TaskReportQuery } from './task-report';
-import { maxEvidenceFiles, maxEvidenceFileSize } from './task-evidence';
+import { maxEvidenceFiles, maxEvidenceFileSize, maxTaskReferenceImages } from './task-evidence';
 import {
   V2OperationalTasksService,
   type TaskListFilters
 } from './v2-operational-tasks.service';
+
+function employeeTestStore(user: CurrentUser) {
+  if (!user.employeeTestSession) return undefined;
+  if (!user.storeId) throw new ForbiddenException('测试门店不可用');
+  return user.storeId;
+}
 
 class TaskListDto implements TaskListFilters {
   @IsOptional()
@@ -126,6 +134,11 @@ class CcOptionsDto {
 }
 
 class DispatchDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  category?: string;
+
   @IsUUID()
   batchId!: string;
 
@@ -183,7 +196,22 @@ class DispatchDto {
   targets!: TargetDto[];
 }
 
+function parseTaskForm<T extends object>(value: unknown, dto: new () => T) {
+  try {
+    const payload: unknown = JSON.parse(typeof value === 'string' ? value : '');
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error();
+    return plainToInstance(dto, payload);
+  } catch {
+    throw new BadRequestException('任务表单无效');
+  }
+}
+
 class ScheduleDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  category?: string;
+
   @IsUUID()
   requestId!: string;
 
@@ -232,6 +260,24 @@ class ScheduleDto {
   @Max(168)
   dueHours!: number;
 }
+
+class DispatchImagesDto {
+  @Transform(({ value }) => parseTaskForm(value, DispatchDto))
+  @ValidateNested()
+  @IsOptional()
+  payload?: DispatchDto;
+}
+
+class ScheduleImagesDto {
+  @Transform(({ value }) => parseTaskForm(value, ScheduleDto))
+  @ValidateNested()
+  @IsOptional()
+  payload?: ScheduleDto;
+}
+
+const referenceUploadLimits = {
+  limits: { fileSize: maxEvidenceFileSize, fields: 1, fieldSize: 64 * 1024 }
+};
 
 class ScheduleEnabledDto {
   @IsBoolean()
@@ -337,7 +383,7 @@ export class V2OperationalTasksController {
   @Get()
   @Header('Cache-Control', 'no-store')
   list(@CurrentUserInfo() user: CurrentUser, @Query() query: TaskListDto) {
-    return this.tasks.list(user.id, query);
+    return this.tasks.list(user.id, query, employeeTestStore(user));
   }
 
   @Get('extensions')
@@ -395,7 +441,7 @@ export class V2OperationalTasksController {
   @Get('inbox')
   @Header('Cache-Control', 'no-store')
   inbox(@CurrentUserInfo() user: CurrentUser) {
-    return this.tasks.inbox(user.id);
+    return this.tasks.inbox(user.id, employeeTestStore(user));
   }
 
   @Post('inbox/:id/read')
@@ -403,7 +449,7 @@ export class V2OperationalTasksController {
     @CurrentUserInfo() user: CurrentUser,
     @Param('id') id: string
   ) {
-    return this.tasks.readNotification(user.id, id);
+    return this.tasks.readNotification(user.id, id, employeeTestStore(user));
   }
 
   @Get('targets')
@@ -473,6 +519,51 @@ export class V2OperationalTasksController {
     return this.tasks.dispatch(user.id, body);
   }
 
+  @Post('schedules/:id/archive')
+  archiveSchedule(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
+    return this.tasks.setScheduleEnabled(user.id, id, false, true);
+  }
+
+  @Post('dispatch-with-references')
+  @UseInterceptors(FilesInterceptor('references', maxTaskReferenceImages, referenceUploadLimits))
+  dispatchWithReferences(
+    @CurrentUserInfo() user: CurrentUser,
+    @Body() body: DispatchImagesDto,
+    @UploadedFiles() files?: Array<{ buffer: Buffer }>
+  ) {
+    if (!body.payload) throw new BadRequestException('缺少任务表单');
+    return this.tasks.dispatchWithReferences(user.id, body.payload, files?.map(({ buffer }) => buffer) ?? []);
+  }
+
+  @Post('schedules-with-references')
+  @UseInterceptors(FilesInterceptor('references', maxTaskReferenceImages, referenceUploadLimits))
+  scheduleWithReferences(
+    @CurrentUserInfo() user: CurrentUser,
+    @Body() body: ScheduleImagesDto,
+    @UploadedFiles() files?: Array<{ buffer: Buffer }>
+  ) {
+    if (!body.payload) throw new BadRequestException('缺少任务表单');
+    return this.tasks.scheduleWithReferences(user.id, body.payload, files?.map(({ buffer }) => buffer) ?? []);
+  }
+
+  @Get(':id/references/:index')
+  async referenceImage(
+    @CurrentUserInfo() user: CurrentUser,
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @Res() response: Response
+  ) {
+    const image = await this.tasks.referenceImage(user.id, id, Number(index), employeeTestStore(user));
+    response.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    response.type('image/jpeg').send(Buffer.from(image));
+  }
+
+  @Get(':id/assigned-detail')
+  @Header('Cache-Control', 'no-store')
+  assignedDetail(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
+    return this.tasks.assignedDetail(user.id, id, employeeTestStore(user));
+  }
+
   @Post(':id/claim')
   claim(@CurrentUserInfo() user: CurrentUser, @Param('id') id: string) {
     return this.tasks.claim(user.id, id);
@@ -485,7 +576,7 @@ export class V2OperationalTasksController {
     @Param('evidenceId') evidenceId: string,
     @Res() response: Response
   ) {
-    const image = await this.tasks.evidence(user.id, id, evidenceId);
+    const image = await this.tasks.evidence(user.id, id, evidenceId, employeeTestStore(user));
     response.set({
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff'
@@ -507,7 +598,8 @@ export class V2OperationalTasksController {
       user.id,
       id,
       photo?.buffer,
-      body.checklistItemId
+      body.checklistItemId,
+      employeeTestStore(user)
     );
   }
 
@@ -532,7 +624,8 @@ export class V2OperationalTasksController {
       body.checklistIssues,
       body.confirmedItems,
       body.photoItemIds,
-      body.evidenceDraftIds
+      body.evidenceDraftIds,
+      employeeTestStore(user)
     );
   }
 

@@ -20,6 +20,14 @@ const secureConnection = window.isSecureContext;
 const settingsSaved = ref(false);
 const errorMessage = ref('');
 const busy = ref(false);
+const testPath = settingsPath + '/employee-test-access';
+interface EmployeeTestSettings {
+  enabled: boolean;
+  operatorPhone?: string;
+}
+const testEnabled = ref(false);
+const testOperatorPhone = ref('');
+const testSettingsLoaded = ref(false);
 
 function applySettings(value: AttendanceSettings) {
   settings.value = value;
@@ -67,12 +75,23 @@ function saveSettings() {
   });
 }
 
-onMounted(
-  () =>
-    void run(async () =>
-      applySettings(await request<AttendanceSettings>(settingsPath))
-    )
-);
+function toggleTestAccess(enabled: boolean) {
+  void run(async () => {
+    const value = await request<EmployeeTestSettings>(testPath, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled, ...(enabled ? { operatorPhone: testOperatorPhone.value.trim() } : {}) })
+    });
+    testEnabled.value = value.enabled;
+  });
+}
+
+onMounted(() => void run(async () => {
+  applySettings(await request<AttendanceSettings>(settingsPath));
+  const testSettings = await request<EmployeeTestSettings>(testPath);
+  testEnabled.value = testSettings.enabled;
+  testOperatorPhone.value = testSettings.operatorPhone ?? '';
+  testSettingsLoaded.value = true;
+}));
 </script>
 
 <template>
@@ -80,7 +99,7 @@ onMounted(
     <h1 class="text-xl font-semibold">小程序考勤配置</h1>
     <n-alert type="info" :bordered="false">
       门店 Wi-Fi BSSID
-      由店长在对应门店工作台的「排班与考勤」中维护。本页只配置微信小程序和全局打卡时间窗口。
+      由店长在对应门店工作台的「排班与考勤」中维护。
     </n-alert>
     <n-card v-if="settings" title="微信与打卡窗口" size="small">
       <n-alert v-if="!secureConnection" type="warning">
@@ -134,6 +153,16 @@ onMounted(
           <span v-if="settingsSaved" role="status">已保存</span>
         </n-space>
       </n-form>
+    </n-card>
+    <n-card v-if="testSettingsLoaded" title="中海国际店测试模式" size="small">
+      <n-form-item label="测试人员登录手机号">
+        <n-input v-model:value="testOperatorPhone" maxlength="11" :disabled="busy || testEnabled" />
+      </n-form-item>
+      <n-space align="center">
+        <n-switch aria-label="开启测试模式" :value="testEnabled" :loading="busy" :disabled="busy || (!testEnabled && !/^1[3-9]\d{9}$/.test(testOperatorPhone.trim()))" @update:value="toggleTestAccess" />
+        <span role="status">{{ testEnabled ? '已开启' : '已关闭' }}</span>
+      </n-space>
+      <p class="mt-3">开启后，指定员工用自己的账号登录一次，即可用员工编号或手机号切换本店员工。测试期间可提交实际任务，考勤停用。关闭后，员工绑定和切换恢复账号密码验证。</p>
     </n-card>
     <n-alert v-if="errorMessage" type="error">{{ errorMessage }}</n-alert>
   </section>

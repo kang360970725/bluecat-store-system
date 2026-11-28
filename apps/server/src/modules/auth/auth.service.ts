@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, type JwtSignOptions } from '@nestjs/jwt';
 import { compare, hash } from 'bcryptjs';
@@ -6,6 +6,7 @@ import type { CurrentUser, LoginResult } from '@bluecat/shared';
 import { readDirectAccountAccess, resolveAccountStoreIds } from '../../common/direct-account-access';
 import { PrismaService } from '../../database/prisma.service';
 import { ChangePasswordDto, LoginDto } from './dto';
+import { activeTestTarget } from '../../common/employee-test-access';
 
 @Injectable()
 export class AuthService {
@@ -119,6 +120,54 @@ export class AuthService {
 
   openWechatSession(accountId: string, wechatBoundAt: string) {
     return this.loginV2({ accountId, wechatBoundAt }, {});
+  }
+
+  private async openEmployeeTestSession(accountId: string, expectedPolicyVersion: string, operatorId: string): Promise<LoginResult> {
+    const target = await activeTestTarget(this.prisma, accountId, operatorId);
+    if (!target || expectedPolicyVersion !== target.policyVersion)
+      throw new ForbiddenException('测试账号不可用，请重新查询');
+    const user: CurrentUser = {
+      id: target.id, username: target.employeeNo, nickname: target.name,
+      employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
+      accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true
+    };
+    const accessToken = await this.jwtService.signAsync(
+      { ...user, sub: user.id, employeeTestPolicyVersion: target.policyVersion, employeeTestAuthorizedBy: operatorId },
+      { secret: this.config.getOrThrow<string>('jwt.secret'), expiresIn: '30m' }
+    );
+    await this.prisma.v2AuthorizationAudit.create({
+      data: {
+        subject: 'EMPLOYEE_TEST_SESSION', subjectId: user.id, subjectName: user.nickname,
+        actorId: operatorId, after: { storeId: target.storeId }
+      }
+    });
+    return { accessToken, refreshToken: '', expiresIn: 1800, user };
+  }
+
+  createEmployeeTestPreviewTicket(accountId: string, policyVersion: string, operatorId: string) {
+    return this.jwtService.signAsync(
+      { sub: accountId, policyVersion, operatorId },
+      {
+        secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
+        audience: 'employee-test-preview',
+        expiresIn: '2m'
+      }
+    );
+  }
+
+  async confirmEmployeeTestPreview(ticket: string, operatorId: string): Promise<LoginResult> {
+    let preview: { sub: string; policyVersion: string; operatorId: string };
+    try {
+      preview = await this.jwtService.verifyAsync(ticket, {
+        secret: this.config.getOrThrow<string>('jwt.refreshSecret'),
+        audience: 'employee-test-preview'
+      });
+    } catch {
+      throw new ForbiddenException('预览已失效，请重新查询测试账号');
+    }
+    if (typeof preview.sub !== 'string' || typeof preview.policyVersion !== 'string' || preview.operatorId !== operatorId)
+      throw new ForbiddenException('预览已失效，请重新查询测试账号');
+    return this.openEmployeeTestSession(preview.sub, preview.policyVersion, operatorId);
   }
 
   private async loginV2(

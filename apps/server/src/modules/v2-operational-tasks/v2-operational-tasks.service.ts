@@ -1,4 +1,5 @@
 import { chinaCsvTime, csvRow } from '../../common/csv';
+import { randomUUID } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -25,16 +26,36 @@ import {
 import { nextTaskRun } from './task-schedule';
 import {
   encodeTaskEvidence,
+  maxEvidenceFileSize,
+  maxTaskReferenceImages,
   maxEncodedEvidenceTotalSize,
   maxLegacyEvidenceFiles,
   maxRawEvidenceTotalSize
 } from './task-evidence';
 import { PrismaService } from '../../database/prisma.service';
 import { TaskEvidenceObjectStorage } from './task-evidence-storage';
+import { V2AttendanceService } from '../v2-attendance/v2-attendance.service';
 
 const operating = { status: 'OPERATING', deletedAt: null } as const;
 const activePosition = { enabled: true, deletedAt: null } as const;
 const activeEmployee = { status: 'ACTIVE', deletedAt: null } as const;
+type ReferenceImage = { objectKey: string; checksumSha256: string };
+
+function taskReferences(value: Prisma.JsonValue | null): ReferenceImage[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const image = jsonObject(item);
+    return typeof image.objectKey === 'string' && typeof image.checksumSha256 === 'string'
+      ? [{ objectKey: image.objectKey, checksumSha256: image.checksumSha256 }]
+      : [];
+  });
+}
+
+function sameTaskReferences(value: Prisma.JsonValue | null, references: ReferenceImage[]) {
+  const saved = taskReferences(value);
+  return saved.length === references.length &&
+    saved.every((image, index) => image.checksumSha256 === references[index]?.checksumSha256);
+}
 
 const currentEvidence = {
   where: { reopenId: null },
@@ -62,6 +83,7 @@ export interface TaskListFilters {
 const managementPageSize = 20;
 
 interface DispatchInput {
+  category?: string;
   batchId: string;
   title: string;
   description: string;
@@ -77,7 +99,7 @@ interface DispatchInput {
 
 interface ScheduleInput extends Pick<
   DispatchInput,
-  'title' | 'description' | 'checklist' | 'ccUsernames' | 'reviewMode'
+  'title' | 'description' | 'checklist' | 'ccUsernames' | 'reviewMode' | 'category'
 > {
   requestId: string;
   targets: Array<Pick<Target, 'storeId' | 'targetKey'>>;
@@ -149,6 +171,14 @@ function savedCc(value: Prisma.JsonValue | null) {
   );
 }
 
+function sameCc(value: Prisma.JsonValue | null, selections: string[]) {
+  const recipients = savedCc(value);
+  return recipients.length === selections.length &&
+    recipients.every(({ username, accountId }) =>
+      selections.includes(username) || selections.includes(`id:${accountId}`)
+    );
+}
+
 function jsonObject(value: Prisma.JsonValue | null): Prisma.JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value
@@ -188,11 +218,13 @@ export class V2OperationalTasksService
   private scheduleTimer?: ReturnType<typeof setInterval>;
   private draftCleanupTimer?: ReturnType<typeof setInterval>;
   private processingSchedules = false;
+  private processingWechat = false;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly objectStorage: TaskEvidenceObjectStorage
+    private readonly objectStorage: TaskEvidenceObjectStorage,
+    private readonly wechat: V2AttendanceService
   ) {}
 
   onModuleInit() {
@@ -204,11 +236,11 @@ export class V2OperationalTasksService
     void this.cleanupEvidenceDrafts();
     if (!this.config.get<boolean>('app.backgroundJobsEnabled')) return;
     this.scheduleTimer = setInterval(
-      () => void this.processSchedules(),
+      () => void this.processBackgroundDispatch(),
       30_000
     );
     this.scheduleTimer.unref();
-    void this.processSchedules();
+    void this.processBackgroundDispatch();
   }
 
   onModuleDestroy() {
@@ -275,10 +307,10 @@ export class V2OperationalTasksService
     }
   }
 
-  async inbox(accountId: string) {
+  async inbox(accountId: string, testStoreId?: string) {
     return this.prisma.$transaction(
       async (tx) => {
-        const where = await this.inboxScope(accountId, tx);
+        const where = await this.inboxScope(accountId, tx, testStoreId);
         const unread = await tx.v2OperationalTaskNotification.count({
           where: { ...where, readAt: null }
         });
@@ -290,7 +322,7 @@ export class V2OperationalTasksService
             reason: true,
             readAt: true,
             createdAt: true,
-            task: { select: { title: true, store: { select: { name: true } } } }
+            task: { select: { id: true, title: true, store: { select: { name: true } } } }
           },
           orderBy: [
             { readAt: { sort: 'desc', nulls: 'first' } },
@@ -305,9 +337,9 @@ export class V2OperationalTasksService
     );
   }
 
-  async readNotification(accountId: string, id: string) {
+  async readNotification(accountId: string, id: string, testStoreId?: string) {
     return this.write(async (tx) => {
-      const where = await this.inboxScope(accountId, tx);
+      const where = await this.inboxScope(accountId, tx, testStoreId);
       await tx.v2OperationalTaskNotification.updateMany({
         where: { ...where, id, readAt: null },
         data: { readAt: new Date() }
@@ -318,16 +350,17 @@ export class V2OperationalTasksService
 
   private async inboxScope(
     accountId: string,
-    tx: Prisma.TransactionClient
+    tx: Prisma.TransactionClient,
+    testStoreId?: string
   ): Promise<Prisma.V2OperationalTaskNotificationWhereInput> {
-    const account = await this.account(accountId, tx);
-    const access = await resolveScopedPermission(
+    const account = await this.account(accountId, tx, testStoreId);
+    const access = testStoreId ? null : await resolveScopedPermission(
       accountId,
       'operational-task:manage',
       tx
     );
     const targets = account.employeeId
-      ? await this.targets(account.employeeId, tx)
+      ? await this.targets(account.employeeId, tx, testStoreId)
       : [];
     const or: Prisma.V2OperationalTaskNotificationWhereInput[] = [];
     if (access) {
@@ -341,7 +374,7 @@ export class V2OperationalTasksService
     }
     if (targets.length) {
       or.push({
-        kind: { in: ['COMPLETED', 'RETURNED', 'RELEASED'] },
+        kind: { in: ['ASSIGNED', 'COMPLETED', 'RETURNED', 'RELEASED'] },
         task: {
           store: operating,
           OR: targets.map(({ storeId, targetKey }) => ({ storeId, targetKey }))
@@ -349,6 +382,41 @@ export class V2OperationalTasksService
       });
     }
     return { recipientId: accountId, OR: or };
+  }
+
+  private async notifyAssignment(
+    tx: Prisma.TransactionClient,
+    task: { id: string; storeId: string; targetKey: string }
+  ) {
+    const [kind, targetId] = task.targetKey.split(':');
+    if (!targetId || !['store', 'org', 'group'].includes(kind)) return;
+    const current = {
+      startedOn: { lte: new Date(new Date(Date.now() + 28_800_000).toISOString().slice(0, 10)) },
+      endedOn: null,
+      deletedAt: null,
+      position: activePosition
+    };
+    const target: Prisma.V2EmployeeWhereInput = kind === 'org'
+      ? { organizationEmployments: { some: {
+          ...current, costStoreId: task.storeId, costStore: operating, positionId: targetId
+        } } }
+      : { employments: { some: {
+          ...current, storeId: task.storeId, store: operating,
+          ...(kind === 'group' ? {
+            operationalTaskGroups: { some: { group: { id: targetId, storeId: task.storeId, enabled: true } } }
+          } : { positionId: targetId })
+        } } };
+    const recipients = await tx.v2Account.findMany({
+      where: {
+        status: 'ACTIVE', deletedAt: null, mustChangePassword: false,
+        employee: { ...activeEmployee, ...target }
+      },
+      select: { id: true }
+    });
+    if (!recipients.length) return;
+    await tx.v2OperationalTaskNotification.createMany({
+      data: recipients.map(({ id }) => ({ taskId: task.id, recipientId: id, kind: 'ASSIGNED' }))
+    });
   }
 
   private async notifyExecutor(
@@ -369,10 +437,10 @@ export class V2OperationalTasksService
       });
   }
 
-  async list(accountId: string, filters: TaskListFilters) {
-    const account = await this.account(accountId);
+  async list(accountId: string, filters: TaskListFilters, testStoreId?: string) {
+    const account = await this.account(accountId, this.prisma, testStoreId);
     const canReviewExtensions = account.superAdmin;
-    const [access, reportAccess] = await Promise.all([
+    const [access, reportAccess] = testStoreId ? [null, null] : await Promise.all([
       resolveScopedPermission(
         accountId,
         'operational-task:manage',
@@ -382,7 +450,7 @@ export class V2OperationalTasksService
     ]);
     const canReport = Boolean(reportAccess);
     const targets = account.employeeId
-      ? await this.targets(account.employeeId)
+      ? await this.targets(account.employeeId, this.prisma, testStoreId)
       : [];
     const available = targets.map(({ storeId, targetKey }) => ({
       storeId,
@@ -411,7 +479,7 @@ export class V2OperationalTasksService
               assignedStatus
             ]
           },
-          omit: { ccRecipients: true },
+          omit: { ccRecipients: true, referenceImages: true, wechatPending: true },
           include: {
             store: { select: { name: true } },
             evidence: currentEvidence,
@@ -480,6 +548,7 @@ export class V2OperationalTasksService
             ? { contains: keyword.replace(/[\\%_]/g, '\\$&') }
             : undefined
         },
+        omit: { referenceImages: true, wechatPending: true },
         include: {
           store: { select: { name: true } },
           evidence: currentEvidence,
@@ -928,14 +997,20 @@ export class V2OperationalTasksService
   }
 
   async schedules(accountId: string) {
-    const access = await this.manageAccess(accountId, this.prisma);
+    await this.account(accountId);
+    const access = await resolveScopedPermission(accountId, 'operational-task:manage', this.prisma);
     return this.prisma.v2OperationalTaskSchedule.findMany({
       where: {
         store: { deletedAt: null },
-        storeId: access.storeIds ? { in: access.storeIds } : undefined
+        archivedAt: null,
+        OR: access?.storeIds === null ? undefined : [
+          { createdBy: accountId },
+          ...(access?.storeIds ? [{ storeId: { in: access.storeIds } }] : [])
+        ]
       },
       select: {
         id: true,
+        category: true,
         title: true,
         targetName: true,
         cadence: true,
@@ -950,7 +1025,8 @@ export class V2OperationalTasksService
     });
   }
 
-  async createSchedule(accountId: string, input: ScheduleInput) {
+  async createSchedule(accountId: string, input: ScheduleInput, references: ReferenceImage[] = []) {
+    const category = input.category?.trim() || null;
     const title = input.title.trim();
     const description = input.description.trim();
     const checklist = normalizeChecklist(input.checklist);
@@ -960,12 +1036,7 @@ export class V2OperationalTasksService
       throw new BadRequestException('请填写任务名称、说明和未来的首次派发时间');
     }
     return this.write(async (tx) => {
-      const access = await this.manageAccess(accountId, tx);
-      if (
-        access.storeIds &&
-        input.targets.some((target) => !access.storeIds?.includes(target.storeId))
-      )
-        throw new ForbiddenException('无权向该门店派发任务');
+      await this.account(accountId, tx);
       const requested = new Set(input.targets.map((target) => this.targetId(target)));
       const existing = await tx.v2OperationalTaskSchedule.findMany({
         where: { createdBy: accountId, batchId: input.requestId }
@@ -977,11 +1048,12 @@ export class V2OperationalTasksService
             (schedule) =>
               requested.has(this.targetId(schedule)) &&
               schedule.title === title &&
+              schedule.category === category &&
+              sameTaskReferences(schedule.referenceImages, references) &&
               schedule.description === description &&
               JSON.stringify(schedule.checklist ?? []) === JSON.stringify(checklist) &&
               schedule.reviewMode === (input.reviewMode ?? 'REQUIRED') &&
-              JSON.stringify(savedCc(schedule.ccRecipients).map((item) => item.username)) ===
-                JSON.stringify(ccUsernames) &&
+              sameCc(schedule.ccRecipients, ccUsernames) &&
               schedule.cadence === input.cadence &&
               schedule.firstRunAt.getTime() === firstRunAt.getTime() &&
               schedule.dueHours === input.dueHours
@@ -989,7 +1061,7 @@ export class V2OperationalTasksService
         if (!same) {
           throw new ConflictException('循环模板请求已使用，请重新发起');
         }
-        return { count: existing.length };
+        return { count: existing.length, ...(references.length ? { reused: true } : {}) };
       }
       if (firstRunAt.getTime() <= Date.now())
         throw new BadRequestException('首次派发时间必须晚于当前时间');
@@ -1014,6 +1086,8 @@ export class V2OperationalTasksService
           targetKey: target.targetKey,
           targetName: target.targetName,
           title,
+          category,
+          referenceImages: references.length ? references : undefined,
           description,
           checklist,
           ccRecipients,
@@ -1030,17 +1104,31 @@ export class V2OperationalTasksService
     });
   }
 
-  async setScheduleEnabled(accountId: string, id: string, enabled: boolean) {
+  async setScheduleEnabled(accountId: string, id: string, enabled: boolean, archive = false) {
     return this.write(async (tx) => {
-      const access = await this.manageAccess(accountId, tx);
+      await this.account(accountId, tx);
+      const access = await resolveScopedPermission(accountId, 'operational-task:manage', tx);
       const schedule = await tx.v2OperationalTaskSchedule.findFirst({
         where: {
           id,
           store: { deletedAt: null },
-          storeId: access.storeIds ? { in: access.storeIds } : undefined
+          OR: access?.storeIds === null ? undefined : [
+            { createdBy: accountId },
+            ...(access?.storeIds ? [{ storeId: { in: access.storeIds } }] : [])
+          ]
         }
       });
       if (!schedule) throw new ForbiddenException('无权操作该循环模板');
+      if (archive) {
+        if (!schedule.archivedAt) {
+          await tx.v2OperationalTaskSchedule.update({
+            where: { id },
+            data: { enabled: false, archivedAt: new Date() }
+          });
+        }
+        return { enabled: false };
+      }
+      if (schedule.archivedAt) throw new BadRequestException('循环模板已移除');
       if (schedule.enabled === enabled) return { enabled };
       let nextRunAt = schedule.nextRunAt;
       if (enabled) {
@@ -1095,6 +1183,105 @@ export class V2OperationalTasksService
     }
   }
 
+  private async processBackgroundDispatch() {
+    await this.processSchedules();
+    await this.processWechatDispatch();
+  }
+
+  private async processWechatDispatch() {
+    if (this.processingWechat || !this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim()) return;
+    this.processingWechat = true;
+    try {
+      const now = new Date();
+      const recent = new Date(now.getTime() - 86_400_000);
+      await this.prisma.v2OperationalTask.updateMany({
+        where: { wechatPending: true, OR: [
+          { dueAt: { lte: now } }, { createdAt: { lt: recent } }, { status: { not: 'PENDING' } }
+        ] },
+        data: { wechatPending: false }
+      });
+      const template = await this.wechat.taskWechatTemplate();
+      if (!template) return;
+      const pending = await this.prisma.v2OperationalTask.findMany({
+        where: { wechatPending: true, dueAt: { gt: now }, status: 'PENDING' },
+        select: { id: true, title: true, dueAt: true, createdAt: true, storeId: true, targetKey: true },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: 25
+      });
+      if (!pending.length) return;
+      const bindings = await this.prisma.v2AttendanceWechatBinding.findMany({
+        where: {
+          taskSubscriptionKey: template.key,
+          taskSubscribedAt: { lte: now },
+          taskOpenIdCipher: { not: null },
+          account: {
+            status: 'ACTIVE', deletedAt: null, mustChangePassword: false,
+            employee: activeEmployee
+          }
+        },
+        select: { accountId: true, taskSubscribedAt: true, taskOpenIdCipher: true,
+          account: { select: { employeeId: true } } }
+      });
+      const recipients = [];
+      for (const binding of bindings) {
+        if (!binding.account.employeeId || !binding.taskSubscribedAt || !binding.taskOpenIdCipher)
+          continue;
+        const targets = await this.targets(binding.account.employeeId);
+        recipients.push({
+          accountId: binding.accountId, subscribedAt: binding.taskSubscribedAt,
+          employeeId: binding.account.employeeId,
+          openIdCipher: binding.taskOpenIdCipher,
+          targets: new Set(targets.map((target) => this.targetId(target)))
+        });
+      }
+      for (const task of pending) {
+        const eligible = recipients.filter((recipient) =>
+          recipient.subscribedAt <= task.createdAt && recipient.targets.has(this.targetId(task)));
+        if (eligible.length) {
+          const token = await this.wechat.taskWechatAccessToken(template.appid);
+          for (const recipient of eligible) {
+            const reserved = await this.write(async (tx) => {
+              const active = await tx.v2OperationalTask.findFirst({
+                where: { id: task.id, wechatPending: true, status: 'PENDING', dueAt: { gt: new Date() } },
+                select: { id: true }
+              });
+              if (!active) return false;
+              const liveTargets = await this.targets(recipient.employeeId, tx, task.storeId);
+              if (!liveTargets.some((target) => target.targetKey === task.targetKey))
+                return false;
+              const used = await tx.v2AttendanceWechatBinding.updateMany({
+                where: {
+                  accountId: recipient.accountId, taskSubscriptionKey: template.key,
+                  taskSubscribedAt: recipient.subscribedAt,
+                  account: {
+                    employeeId: recipient.employeeId, status: 'ACTIVE', deletedAt: null,
+                    mustChangePassword: false, employee: activeEmployee
+                  }
+                },
+                data: { taskSubscribedAt: null, taskOpenIdCipher: null }
+              });
+              return used.count === 1;
+            });
+            if (!reserved) continue;
+            try {
+              await this.wechat.sendTaskWechatMessage(token, recipient.openIdCipher, template, task);
+            } catch {
+              this.logger.warn(`微信任务提醒未确认送达（任务 ${task.id}）`);
+            }
+          }
+        }
+        await this.prisma.v2OperationalTask.updateMany({
+          where: { id: task.id, wechatPending: true },
+          data: { wechatPending: false }
+        });
+      }
+    } catch {
+      this.logger.warn('微信任务提醒处理暂不可用');
+    } finally {
+      this.processingWechat = false;
+    }
+  }
+
   private async runSchedule(id: string) {
     return this.write(async (tx) => {
       const now = new Date();
@@ -1102,24 +1289,21 @@ export class V2OperationalTasksService
         where: { id, enabled: true, nextRunAt: { lte: now } }
       });
       if (!schedule) return;
-      const access = await resolveScopedPermission(
-        schedule.scheduledBy,
-        'operational-task:manage',
-        tx
-      );
-      const target =
-        access &&
-        (!access.storeIds || access.storeIds.includes(schedule.storeId))
-          ? (await this.targets(undefined, tx, schedule.storeId)).find(
-              (item) => item.targetKey === schedule.targetKey
-            )
-          : undefined;
+      const sponsor = await this.account(schedule.scheduledBy, tx).catch((error) => {
+        if (error instanceof ForbiddenException) return null;
+        throw error;
+      });
+      const target = sponsor
+        ? (await this.targets(undefined, tx, schedule.storeId)).find(
+            (item) => item.targetKey === schedule.targetKey
+          )
+        : undefined;
       if (!target) {
         await tx.v2OperationalTaskSchedule.update({
           where: { id },
           data: {
             enabled: false,
-            pauseReason: '派发账号授权、门店或岗位已失效'
+            pauseReason: '派发账号、门店或岗位已失效'
           }
         });
         return;
@@ -1138,7 +1322,7 @@ export class V2OperationalTasksService
         data: { nextRunAt }
       });
       if (!update.count || slot > now) return;
-      await tx.v2OperationalTask.create({
+      const task = await tx.v2OperationalTask.create({
         data: {
           scheduleId: id,
           scheduledFor: slot,
@@ -1147,6 +1331,10 @@ export class V2OperationalTasksService
           targetKey: target.targetKey,
           targetName: target.targetName,
           title: schedule.title,
+          category: schedule.category,
+          referenceImages: taskReferences(schedule.referenceImages),
+          referenceImageCount: taskReferences(schedule.referenceImages).length,
+          wechatPending: Boolean(this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim()),
           description: schedule.description,
           ccRecipients: savedCc(schedule.ccRecipients),
           checklist: Array.isArray(schedule.checklist)
@@ -1155,16 +1343,16 @@ export class V2OperationalTasksService
           reviewMode: schedule.reviewMode,
           createdBy: schedule.scheduledBy,
           dueAt: new Date(slot.getTime() + duration)
-        }
+        },
+        select: { id: true, storeId: true, targetKey: true }
       });
+      await this.notifyAssignment(tx, task);
     });
   }
 
   async dispatchTargets(accountId: string) {
-    const access = await this.manageAccess(accountId, this.prisma);
-    return (await this.targets()).filter(
-      (target) => !access.storeIds || access.storeIds.includes(target.storeId)
-    );
+    await this.account(accountId);
+    return this.targets();
   }
 
   async managementGroups(accountId: string) {
@@ -1316,19 +1504,13 @@ export class V2OperationalTasksService
   }
 
   async ccOptions(accountId: string, rawStoreIds: string[]) {
+    await this.account(accountId);
     const storeIds = [
       ...new Set(rawStoreIds.map((storeId) => storeId.trim()).filter(Boolean))
     ];
     if (!storeIds.length) return [];
     if (storeIds.length > 50 || storeIds.some((storeId) => storeId.length > 100))
       throw new BadRequestException('抄送门店范围无效');
-    const requester = await this.manageAccess(accountId, this.prisma);
-    if (
-      requester.storeIds &&
-      storeIds.some((storeId) => !requester.storeIds?.includes(storeId))
-    ) {
-      throw new ForbiddenException('无权查看所选门店的抄送账号');
-    }
     const [accounts, stores] = await Promise.all([
       this.prisma.v2Account.findMany({
         where: {
@@ -1367,7 +1549,7 @@ export class V2OperationalTasksService
       }
       return [
         {
-          username: account.username,
+          value: `id:${account.id}`,
           displayName: account.displayName,
           allStores: access.storeIds === null,
           stores:
@@ -1380,7 +1562,8 @@ export class V2OperationalTasksService
     });
   }
 
-  async dispatch(accountId: string, input: DispatchInput) {
+  async dispatch(accountId: string, input: DispatchInput, references: ReferenceImage[] = []) {
+    const category = input.category?.trim() || null;
     const title = input.title.trim();
     const description = input.description.trim();
     const checklist = normalizeChecklist(input.checklist);
@@ -1390,8 +1573,11 @@ export class V2OperationalTasksService
       throw new BadRequestException('请填写任务名称、说明和未来的截止时间');
     }
     return this.write(async (tx) => {
-      const access = await this.manageAccess(accountId, tx);
       const sourceTaskId = input.sourceTaskId ?? null;
+      await this.account(accountId, tx);
+      const rectificationAccess = sourceTaskId
+        ? await this.manageAccess(accountId, tx)
+        : null;
       const sourceItemIndex = input.sourceItemIndex ?? null;
       const revision = input.sourceSubmittedAt
         ? new Date(input.sourceSubmittedAt)
@@ -1408,9 +1594,9 @@ export class V2OperationalTasksService
         throw new BadRequestException('检查项整改必须指定原任务和提交轮次');
       }
       if (
-        access.storeIds &&
+        rectificationAccess?.storeIds &&
         input.targets.some(
-          (target) => !access.storeIds?.includes(target.storeId)
+          (target) => !rectificationAccess.storeIds?.includes(target.storeId)
         )
       ) {
         throw new ForbiddenException('无权向该门店派发任务');
@@ -1424,6 +1610,8 @@ export class V2OperationalTasksService
           storeId: true,
           targetKey: true,
           title: true,
+          category: true,
+          referenceImages: true,
           description: true,
           checklist: true,
           reviewMode: true,
@@ -1441,6 +1629,8 @@ export class V2OperationalTasksService
             (task) =>
               requested.has(this.targetId(task)) &&
               task.title === title &&
+              task.category === category &&
+              sameTaskReferences(task.referenceImages, references) &&
               task.description === description &&
               JSON.stringify(task.checklist ?? []) ===
                 JSON.stringify(checklist) &&
@@ -1452,13 +1642,11 @@ export class V2OperationalTasksService
                 sourceItemIndex &&
               (jsonObject(task.sourceIssue).submittedAt ?? null) ===
                 sourceSubmittedAt &&
-              JSON.stringify(
-                savedCc(task.ccRecipients).map((item) => item.username)
-              ) === JSON.stringify(ccUsernames)
+              sameCc(task.ccRecipients, ccUsernames)
           );
         if (!sameBatch)
           throw new ConflictException('此派发批次已使用，请重新发起');
-        return { count: previous.length };
+        return { count: previous.length, ...(references.length ? { reused: true } : {}) };
       }
       let sourceIssue:
         | { index: number; label: string; reason: string; submittedAt: string }
@@ -1526,14 +1714,18 @@ export class V2OperationalTasksService
       const ccRecipients = await this.resolveCc(tx, ccUsernames, [
         ...new Set(targets.map((target) => target.storeId))
       ]);
-      await tx.v2OperationalTask.createMany({
-        data: targets.map(({ storeId, targetKey, targetName }) => ({
+      const tasks = targets.map(({ storeId, targetKey, targetName }) => ({
+          id: randomUUID(),
           storeId,
           targetKey,
           targetName,
           sourceTaskId,
           sourceIssue,
           title,
+          category,
+          referenceImages: references.length ? references : undefined,
+          referenceImageCount: references.length,
+          wechatPending: Boolean(this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim()),
           description,
           checklist,
           reviewMode: input.reviewMode ?? 'REQUIRED',
@@ -1541,8 +1733,9 @@ export class V2OperationalTasksService
           dueAt,
           batchId: input.batchId,
           createdBy: accountId
-        }))
-      });
+      }));
+      await tx.v2OperationalTask.createMany({ data: tasks });
+      for (const task of tasks) await this.notifyAssignment(tx, task);
       return { count: targets.length };
     });
   }
@@ -1572,8 +1765,78 @@ export class V2OperationalTasksService
     });
   }
 
-  async evidence(accountId: string, taskId: string, evidenceId: string) {
-    const access = await resolveScopedPermission(
+  async dispatchWithReferences(accountId: string, input: DispatchInput, files: Buffer[]) {
+    await this.account(accountId);
+    if (input.sourceTaskId) await this.manageAccess(accountId, this.prisma);
+    return this.withReferenceImages(files, (images) => this.dispatch(accountId, input, images));
+  }
+
+  async scheduleWithReferences(accountId: string, input: ScheduleInput, files: Buffer[]) {
+    await this.account(accountId);
+    return this.withReferenceImages(files, (images) => this.createSchedule(accountId, input, images));
+  }
+
+  private async withReferenceImages(
+    files: Buffer[],
+    publish: (images: ReferenceImage[]) => Promise<{ count: number; reused?: boolean }>
+  ) {
+    if (files.length > maxTaskReferenceImages || files.some((file) => file.length > maxEvidenceFileSize))
+      throw new BadRequestException('参考图片最多三张，单张不超过 5 MB');
+    const references: ReferenceImage[] = [];
+    let retained = false;
+    try {
+      for (const file of files) {
+        const encoded = await encodeTaskEvidence(file);
+        const { objectKey, checksumSha256 } = await this.objectStorage.put(encoded.image);
+        references.push({ objectKey, checksumSha256 });
+      }
+      const result = await publish(references);
+      retained = !result.reused;
+      return { count: result.count };
+    } finally {
+      if (!retained) {
+        const cleanup = await Promise.allSettled(
+          references.map((image) => this.objectStorage.delete(image.objectKey))
+        );
+        if (cleanup.some(({ status }) => status === 'rejected'))
+          this.logger.warn('清理未发布参考图片失败');
+      }
+    }
+  }
+
+  async referenceImage(accountId: string, taskId: string, index: number, testStoreId?: string) {
+    const access = testStoreId ? null : await resolveScopedPermission(accountId, 'operational-task:manage', this.prisma);
+    const task = await this.prisma.v2OperationalTask.findFirst({
+      where: { id: taskId, storeId: testStoreId, store: { deletedAt: null } },
+      select: { createdBy: true, storeId: true, referenceImages: true }
+    });
+    if (!task) throw new ForbiddenException('照片不存在或无权查看');
+    const canManage = access && (!access.storeIds || access.storeIds.includes(task.storeId));
+    if (!testStoreId && (task.createdBy === accountId || canManage)) {
+      await this.account(accountId);
+    } else {
+      await this.employeeTask(this.prisma, accountId, taskId, testStoreId);
+    }
+    const photo = Number.isInteger(index) && index >= 0 ? taskReferences(task.referenceImages)[index] : undefined;
+    if (!photo) throw new ForbiddenException('照片不存在或无权查看');
+    return this.objectStorage.get(photo.objectKey, photo.checksumSha256);
+  }
+
+  async assignedDetail(accountId: string, taskId: string, testStoreId?: string) {
+    const { task, employeeId } = await this.employeeTask(this.prisma, accountId, taskId, testStoreId);
+    if (task.status !== 'PENDING' && task.claimerId !== employeeId)
+      throw new ForbiddenException('任务已由同组员工处理');
+    const store = await this.prisma.v2Store.findUniqueOrThrow({
+      where: { id: task.storeId }, select: { name: true }
+    });
+    const { id, title, description, dueAt, status, checklist, submission, sourceTaskId,
+      referenceImageCount } = task;
+    return { id, title, description, dueAt, status, checklist, submission, sourceTaskId,
+      referenceImageCount, store };
+  }
+
+  async evidence(accountId: string, taskId: string, evidenceId: string, testStoreId?: string) {
+    const access = testStoreId ? null : await resolveScopedPermission(
       accountId,
       'operational-task:manage',
       this.prisma
@@ -1592,7 +1855,8 @@ export class V2OperationalTasksService
       const { employeeId, task } = await this.employeeTask(
         this.prisma,
         accountId,
-        taskId
+        taskId,
+        testStoreId
       );
       if (task.claimerId !== employeeId)
         throw new ForbiddenException('无权查看任务照片');
@@ -1618,18 +1882,20 @@ export class V2OperationalTasksService
     accountId: string,
     taskId: string,
     photo: Buffer | undefined,
-    checklistItemId?: string
+    checklistItemId?: string,
+    testStoreId?: string
   ) {
     if (!photo) throw new BadRequestException('请选择照片');
     const encoded = await encodeTaskEvidence(photo);
-    await this.employeeTask(this.prisma, accountId, taskId);
+    await this.employeeTask(this.prisma, accountId, taskId, testStoreId);
     const stored = await this.objectStorage.put(encoded.image);
     try {
       const result = await this.write(async (tx) => {
         const { task, employeeId } = await this.employeeTask(
           tx,
           accountId,
-          taskId
+          taskId,
+          testStoreId
         );
         if (
           !['PENDING', 'CLAIMED'].includes(task.status) ||
@@ -1706,7 +1972,8 @@ export class V2OperationalTasksService
     issueText?: string,
     confirmedItemsText?: string,
     photoItemIdsText?: string,
-    evidenceDraftIdsText?: string
+    evidenceDraftIdsText?: string,
+    testStoreId?: string
   ) {
     const submission = text.trim();
     if (!submission) throw new BadRequestException('请填写完成说明');
@@ -1717,7 +1984,7 @@ export class V2OperationalTasksService
       throw new BadRequestException(
         '本次上传原图总量超过 24 MB，请压缩或减少照片'
       );
-    const before = await this.employeeTask(this.prisma, accountId, id);
+    const before = await this.employeeTask(this.prisma, accountId, id, testStoreId);
     if (
       (before.task.status === 'SUBMITTED' || before.task.status === 'DONE') &&
       before.task.claimerId === before.employeeId
@@ -1842,7 +2109,7 @@ export class V2OperationalTasksService
     }
     try {
       const outcome = await this.write(async (tx) => {
-        const { employeeId, task } = await this.employeeTask(tx, accountId, id);
+        const { employeeId, task } = await this.employeeTask(tx, accountId, id, testStoreId);
         if (
           (task.status === 'SUBMITTED' || task.status === 'DONE') &&
           task.claimerId === employeeId
@@ -2135,15 +2402,17 @@ export class V2OperationalTasksService
     storeIds: string[]
   ) {
     const recipients: Array<{ accountId: string; username: string }> = [];
-    for (const username of usernames) {
+    for (const selection of usernames) {
       const account = await tx.v2Account.findFirst({
         where: {
-          username,
+          ...(selection.startsWith('id:')
+            ? { id: selection.slice(3) }
+            : { username: selection }),
           status: 'ACTIVE',
           deletedAt: null,
           mustChangePassword: false
         },
-        select: { id: true }
+        select: { id: true, username: true }
       });
       const access =
         account &&
@@ -2163,7 +2432,9 @@ export class V2OperationalTasksService
           '抄送账号无效，或未获得全部目标门店的任务管理权限'
         );
       }
-      recipients.push({ accountId: account.id, username });
+      if (recipients.some(({ accountId }) => accountId === account.id))
+        throw new BadRequestException('抄送账号重复');
+      recipients.push({ accountId: account.id, username: account.username });
     }
     return recipients;
   }
@@ -2180,14 +2451,15 @@ export class V2OperationalTasksService
 
   private async account(
     accountId: string,
-    db: Prisma.TransactionClient = this.prisma
+    db: Prisma.TransactionClient = this.prisma,
+    testStoreId?: string
   ) {
     const account = await db.v2Account.findFirst({
       where: {
         id: accountId,
         status: 'ACTIVE',
         deletedAt: null,
-        mustChangePassword: false,
+        mustChangePassword: testStoreId ? undefined : false,
         OR: [{ employeeId: null }, { employee: activeEmployee }]
       },
       select: {
@@ -2329,17 +2601,18 @@ export class V2OperationalTasksService
   private async employeeTask(
     tx: Prisma.TransactionClient,
     accountId: string,
-    id: string
+    id: string,
+    testStoreId?: string
   ) {
-    const { employeeId, employeeName } = await this.account(accountId, tx);
+    const { employeeId, employeeName } = await this.account(accountId, tx, testStoreId);
     if (!employeeId || !employeeName)
       throw new ForbiddenException('需要有效员工身份');
     const task = await tx.v2OperationalTask.findFirst({
-      where: { id, store: operating }
+      where: { id, storeId: testStoreId, store: operating }
     });
     if (
       !task ||
-      !(await this.targets(employeeId, tx)).some(
+      !(await this.targets(employeeId, tx, testStoreId)).some(
         (target) => this.targetId(target) === this.targetId(task)
       )
     ) {

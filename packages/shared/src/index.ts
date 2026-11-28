@@ -35,6 +35,7 @@ export type CurrentUser = {
   permissions: string[];
   mustChangePassword?: boolean;
   wechatBoundAt?: string;
+  employeeTestSession?: boolean;
 };
 
 export type DataScope = 'ALL' | 'ORG' | 'STORE' | 'SELF' | 'CUSTOM_STORES';

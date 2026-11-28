@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NInputNumber } from 'naive-ui';
+import { NBadge, NInputNumber } from 'naive-ui';
 import { NSelect } from '@/components/Select';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { API_BASE_URL, request } from '@/api/http';
@@ -20,7 +20,7 @@ interface ChecklistItem {
 }
 
 interface CcOption {
-  username: string;
+  value: string;
   displayName: string;
   allStores: boolean;
   stores: string[];
@@ -53,6 +53,8 @@ interface PendingExtension {
 interface Task {
   id: string;
   title: string;
+  referenceImageCount?: number;
+  category?: string | null;
   description: string;
   targetName: string;
   store: { name: string };
@@ -138,6 +140,7 @@ type Cadence = 'DAILY' | 'WEEKLY' | 'MONTHLY';
 interface Schedule {
   id: string;
   title: string;
+  category?: string | null;
   targetName: string;
   cadence: Cadence;
   dueHours: number;
@@ -188,7 +191,7 @@ interface TaskInbox {
   unread: number;
   rows: Array<{
     id: string;
-    kind: 'SUBMITTED' | 'COMPLETED' | 'RETURNED' | 'CC' | 'RELEASED';
+    kind: 'ASSIGNED' | 'SUBMITTED' | 'COMPLETED' | 'RETURNED' | 'CC' | 'RELEASED';
     reason: string | null;
     readAt: string | null;
     createdAt: string;
@@ -202,6 +205,7 @@ type WorkspaceSection =
 const activeSection = ref<WorkspaceSection>('mine');
 const sectionInitialized = ref(false);
 const inboxLabels = {
+  ASSIGNED: '收到新任务',
   SUBMITTED: '任务已提交',
   CC: '任务结果抄送',
   COMPLETED: '任务已确认完成',
@@ -211,6 +215,41 @@ const inboxLabels = {
 
 const base = '/v2/operational-tasks';
 const canManage = ref(false);
+const workspaceTabs = computed(() =>
+  ([
+    { id: 'mine', label: '我的任务' },
+    { id: 'dispatch', label: '任务发布' },
+    { id: 'manage', label: '任务管理', requiresManagement: true },
+    { id: 'automation', label: '循环任务' },
+    { id: 'settings', label: '任务配置', requiresManagement: true }
+  ] satisfies { id: WorkspaceSection; label: string; requiresManagement?: boolean }[])
+    .filter((tab) => !tab.requiresManagement || canManage.value)
+);
+
+function moveWorkspaceTab(event: KeyboardEvent, index: number) {
+  const tabs = workspaceTabs.value;
+  let next: number;
+  switch (event.key) {
+    case 'ArrowLeft':
+      next = (index - 1 + tabs.length) % tabs.length;
+      break;
+    case 'ArrowRight':
+      next = (index + 1) % tabs.length;
+      break;
+    case 'Home':
+      next = 0;
+      break;
+    case 'End':
+      next = tabs.length - 1;
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+  activeSection.value = tabs[next].id;
+  const tabList = (event.currentTarget as HTMLElement).parentElement;
+  tabList?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+}
 const canReport = ref(false);
 const canReviewExtensions = ref(false);
 const pendingExtensions = ref<PendingExtension[]>([]);
@@ -230,6 +269,11 @@ const managed = ref<Task[]>([]);
 const targets = ref<Target[]>([]);
 const selected = ref<string[]>([]);
 const title = ref('');
+const referenceFiles = ref<File[]>([]);
+const referenceInput = ref<HTMLInputElement>();
+const referenceError = ref('');
+const category = ref('');
+const suggestedCategories = ['巡店任务', '周任务', '月任务', '门店自查'];
 const description = ref('');
 const checklistDrafts = ref<ChecklistItem[]>([]);
 const reviewMode = ref<'REQUIRED' | 'AUTO_COMPLETE'>('AUTO_COMPLETE');
@@ -318,13 +362,13 @@ const selectedStoreKey = computed(() =>
 );
 const ccOptions = computed(() =>
   ccCandidates.value.map((account) => ({
-    value: account.username,
-    label: `${account.displayName} · ${account.username} · ${
+    value: account.value,
+    label: `${account.displayName} · ${
       account.allStores ? '全部门店' : account.stores.join('、')
     }`,
     disabled:
       ccUsernames.value.length >= 5 &&
-      !ccUsernames.value.includes(account.username)
+      !ccUsernames.value.includes(account.value)
   }))
 );
 let ccLoadSequence = 0;
@@ -334,6 +378,7 @@ async function loadCcOptions(storeIds: string) {
   ccCandidates.value = [];
   ccError.value = '';
   if (!storeIds) {
+    ccLoading.value = false;
     ccUsernames.value = [];
     return;
   }
@@ -344,7 +389,7 @@ async function loadCcOptions(storeIds: string) {
     );
     if (sequence !== ccLoadSequence) return;
     ccCandidates.value = rows;
-    const available = new Set(rows.map((item) => item.username));
+    const available = new Set(rows.map((item) => item.value));
     ccUsernames.value = ccUsernames.value.filter((username) =>
       available.has(username)
     );
@@ -409,9 +454,13 @@ async function load(
   canReport.value = data.canReport;
   canReviewExtensions.value = data.canReviewExtensions;
   if (!sectionInitialized.value) {
-    activeSection.value = data.canManage ? 'manage' : 'mine';
+    if (data.canManage && activeSection.value === 'mine')
+      activeSection.value = 'manage';
     sectionInitialized.value = true;
-  } else if (!data.canManage && activeSection.value !== 'mine') {
+  } else if (
+    !data.canManage &&
+    ['manage', 'settings'].includes(activeSection.value)
+  ) {
     activeSection.value = 'mine';
   }
   managementStores.value = data.managementStores;
@@ -419,30 +468,28 @@ async function load(
   hasNextPage.value = data.hasNext;
   appliedFilters.value = { ...filters };
 
-  if (refreshTargets || !data.canReviewExtensions) await loadExtensions();
-
-  if (refreshTargets || !data.canManage) {
+  if (refreshTargets) {
+    const [nextTargets, nextSchedules] = await Promise.all([
+      request<Target[]>(`${base}/targets`),
+      request<Schedule[]>(`${base}/schedules`)
+    ]);
+    targets.value = nextTargets;
+    schedules.value = nextSchedules;
+    const available = new Set(targets.value.map(targetValue));
+    selected.value = selected.value.filter((value) => available.has(value));
     if (data.canManage) {
-      const [nextTargets, nextSchedules, nextGroups, nextStorage] =
-        await Promise.all([
-          request<Target[]>(`${base}/targets`),
-          request<Schedule[]>(`${base}/schedules`),
-          request<ManagementGroupStore[]>(`${base}/management-groups`),
-          request<EvidenceStorage>(`${base}/evidence-storage`)
-        ]);
-      targets.value = nextTargets;
-      schedules.value = nextSchedules;
+      const [nextGroups, nextStorage] = await Promise.all([
+        request<ManagementGroupStore[]>(`${base}/management-groups`),
+        request<EvidenceStorage>(`${base}/evidence-storage`)
+      ]);
       managementGroups.value = nextGroups;
       storage.value = nextStorage;
     } else {
-      targets.value = [];
-      schedules.value = [];
       managementGroups.value = [];
       storage.value = undefined;
     }
-    const available = new Set(targets.value.map(targetValue));
-    selected.value = selected.value.filter((value) => available.has(value));
   }
+  if (refreshTargets || !data.canReviewExtensions) await loadExtensions();
 }
 
 function saveManagementGroup(store: ManagementGroupStore) {
@@ -548,7 +595,7 @@ function dispatch() {
     !title.value.trim() ||
     !description.value.trim() ||
     !due.value ||
-    !selected.value.length
+    !selected.value.length || referenceError.value
   )
     return;
   void run(async () => {
@@ -556,6 +603,7 @@ function dispatch() {
       .filter((target) => selected.value.includes(targetValue(target)))
       .map(({ storeId, targetKey }) => ({ storeId, targetKey }));
     const formTitle = title.value.trim();
+    const formCategory = category.value.trim() || undefined;
     const formCcUsernames = [...new Set(ccUsernames.value)];
     const formDescription = description.value.trim();
     const checklist = checklistDrafts.value
@@ -580,6 +628,7 @@ function dispatch() {
     const payload = isRecurring
       ? {
           title: formTitle,
+          category: formCategory,
           description: formDescription,
           checklist,
           reviewMode: reviewMode.value,
@@ -591,6 +640,7 @@ function dispatch() {
         }
       : {
           title: formTitle,
+          category: formCategory,
           description: formDescription,
           checklist,
           reviewMode: reviewMode.value,
@@ -604,26 +654,25 @@ function dispatch() {
               : undefined,
           targets: formTargets
         };
-    const signature = JSON.stringify(payload);
+    const signature = JSON.stringify({
+      payload,
+      references: referenceFiles.value.map((file) => [file.name, file.size, file.lastModified])
+    });
     if (dispatchAttempt.value?.signature !== signature) {
       dispatchAttempt.value = { signature, id: browserUuid() };
     }
     const id = dispatchAttempt.value.id;
     if (isRecurring) {
-      await request(`${base}/schedules`, {
-        method: 'POST',
-        body: JSON.stringify({ ...payload, requestId: id })
-      });
-      feedback.value = `已创建 ${formTargets.length} 个循环模板`;
+      const result = await submitPublish('schedules', { ...payload, requestId: id });
+      feedback.value = `已创建 ${result.count} 个循环任务模板`;
     } else {
-      const result = await request<{ count: number }>(`${base}/dispatch`, {
-        method: 'POST',
-        body: JSON.stringify({ ...payload, batchId: id })
-      });
-      feedback.value = `已派发 ${result.count} 项门店岗位任务`;
+      const result = await submitPublish('dispatch', { ...payload, batchId: id });
+      feedback.value = `已发布 ${result.count} 项任务`;
     }
     dispatchAttempt.value = undefined;
     title.value = '';
+    clearReferences();
+    category.value = '';
     description.value = '';
     checklistDrafts.value = [];
     reviewMode.value = 'AUTO_COMPLETE';
@@ -632,6 +681,39 @@ function dispatch() {
     selected.value = [];
     sourceTask.value = undefined;
     await load(1, appliedFilters.value, isRecurring);
+  });
+}
+
+function clearReferences() {
+  referenceFiles.value = [];
+  referenceError.value = '';
+  if (referenceInput.value) referenceInput.value.value = '';
+}
+
+function chooseReferences(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  dispatchAttempt.value = undefined;
+  if (files.length > 3 || files.some((file) => file.size > 5 * 1024 * 1024)) {
+    clearReferences();
+    referenceError.value = '最多选择 3 张图片，单张不超过 5 MB';
+    return;
+  }
+  referenceError.value = '';
+  referenceFiles.value = files;
+}
+
+function submitPublish(endpoint: 'schedules' | 'dispatch', payload: object) {
+  if (!referenceFiles.value.length) {
+    return request<{ count: number }>(`${base}/${endpoint}`, {
+      method: 'POST', body: JSON.stringify(payload)
+    });
+  }
+  const form = new FormData();
+  form.set('payload', JSON.stringify(payload));
+  for (const file of referenceFiles.value) form.append('references', file);
+  return request<{ count: number }>(`${base}/${endpoint}-with-references`, {
+    method: 'POST', body: form
   });
 }
 
@@ -646,6 +728,19 @@ function toggleSchedule(schedule: Schedule) {
     );
     schedules.value = await request<Schedule[]>(`${base}/schedules`);
     feedback.value = schedule.enabled ? '已暂停循环派发' : '已恢复循环派发';
+  });
+}
+
+function archiveSchedule(schedule: Schedule) {
+  return run(async () => {
+    await request(
+      `${base}/schedules/${encodeURIComponent(schedule.id)}/archive`,
+      {
+        method: 'POST'
+      }
+    );
+    schedules.value = schedules.value.filter(({ id }) => id !== schedule.id);
+    feedback.value = '已移除循环模板，已发布的任务仍保留';
   });
 }
 
@@ -698,14 +793,14 @@ function closePreview() {
   previewUrl.value = '';
 }
 
-async function openPhoto(taskId: string, evidenceId: string) {
+async function openPhoto(taskId: string, evidenceId: string | number) {
   closePreview();
   errorMessage.value = '';
   const controller = new AbortController();
   previewRequest = controller;
   try {
     const response = await fetch(
-      `${API_BASE_URL}${base}/${encodeURIComponent(taskId)}/evidence/${encodeURIComponent(evidenceId)}`,
+      `${API_BASE_URL}${base}/${encodeURIComponent(taskId)}/${typeof evidenceId === 'number' ? 'references' : 'evidence'}/${encodeURIComponent(evidenceId)}`,
       {
         headers: { Authorization: `Bearer ${auth.accessToken}` },
         cache: 'no-store',
@@ -792,6 +887,7 @@ function act(task: Task, action: 'claim' | 'submit' | 'complete') {
 }
 
 function startRectification(task: Task, index?: number) {
+  clearReferences();
   sourceItemIndex.value = index;
   sourceTask.value = task;
   cadence.value = 'ONCE';
@@ -799,6 +895,7 @@ function startRectification(task: Task, index?: number) {
   checklistDrafts.value = [];
   ccUsernames.value = [];
   title.value = `整改 · ${task.title}`.slice(0, 120);
+  category.value = task.category ?? '';
   description.value =
     index === undefined
       ? ''
@@ -808,7 +905,7 @@ function startRectification(task: Task, index?: number) {
   due.value = '';
   selected.value = [];
   errorMessage.value = '';
-  document.getElementById('task-dispatch')?.scrollIntoView({ block: 'start' });
+  activeSection.value = 'dispatch';
 }
 
 function openReopen(task: Task) {
@@ -902,22 +999,38 @@ onUnmounted(() => {
         </p>
       </div>
       <n-space align="center">
+        <n-button type="primary" @click="activeSection = 'dispatch'">
+          发布任务
+        </n-button>
         <n-badge :value="inbox.unread" :max="99">
           <n-button @click="inboxOpen = true">任务消息</n-button>
         </n-badge>
         <RouterLink v-if="canReport" to="/v2/operational-tasks/report">
           <n-button>统计与导出</n-button>
         </RouterLink>
-        <n-button
-          type="primary"
-          :loading="busy"
-          :disabled="busy"
-          @click="refresh"
-        >
+        <n-button :loading="busy" :disabled="busy" @click="refresh">
           刷新数据
         </n-button>
       </n-space>
     </header>
+
+    <div class="workspace-nav" role="tablist" aria-label="运营任务导航">
+      <button
+        v-for="(tab, index) in workspaceTabs"
+        :id="'task-tab-' + tab.id"
+        :key="tab.id"
+        type="button"
+        role="tab"
+        class="workspace-tab"
+        :aria-selected="activeSection === tab.id"
+        :tabindex="activeSection === tab.id ? 0 : -1"
+        aria-controls="task-workspace-panel"
+        @click="activeSection = tab.id"
+        @keydown="moveWorkspaceTab($event, index)"
+      >
+        {{ tab.label }}
+      </button>
+    </div>
 
     <div class="workspace-overview">
       <button
@@ -964,15 +1077,6 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <n-card size="small" class="workspace-nav">
-      <n-tabs v-model:value="activeSection" type="segment" animated>
-        <n-tab-pane name="mine" tab="我的任务" />
-        <n-tab-pane v-if="canManage" name="dispatch" tab="派发任务" />
-        <n-tab-pane v-if="canManage" name="manage" tab="任务管理" />
-        <n-tab-pane v-if="canManage" name="automation" tab="循环任务" />
-        <n-tab-pane v-if="canManage" name="settings" tab="任务配置" />
-      </n-tabs>
-    </n-card>
     <n-alert
       v-if="errorMessage && !selectedTask && !reopenTask && !extensionDialog"
       type="error"
@@ -1021,6 +1125,13 @@ onUnmounted(() => {
       </n-card>
     </n-modal>
 
+    <div
+      id="task-workspace-panel"
+      class="space-y-4"
+      role="tabpanel"
+      :aria-labelledby="'task-tab-' + activeSection"
+      tabindex="0"
+    >
     <n-card
       v-if="canManage"
       v-show="activeSection === 'settings'"
@@ -1085,10 +1196,9 @@ onUnmounted(() => {
     </n-card>
 
     <n-card
-      v-if="canManage"
       v-show="activeSection === 'dispatch'"
       id="task-dispatch"
-      :title="sourceTask ? '派发整改' : '派发任务'"
+      :title="sourceTask ? '派发整改' : '发布任务'"
     >
       <n-space v-if="sourceTask" class="mb-3" align="center">
         <span
@@ -1111,6 +1221,24 @@ onUnmounted(() => {
         >
       </n-space>
       <form class="space-y-3" @submit.prevent="dispatch">
+        <label class="block">
+          任务类型（选填）
+          <input
+            v-model="category"
+            list="task-category-suggestions"
+            maxlength="40"
+            class="task-category-input"
+            placeholder="选择或输入任务类型"
+            :disabled="busy"
+          />
+          <datalist id="task-category-suggestions">
+            <option
+              v-for="suggestion in suggestedCategories"
+              :key="suggestion"
+              :value="suggestion"
+            />
+          </datalist>
+        </label>
         <n-input
           v-model:value="title"
           maxlength="120"
@@ -1124,6 +1252,15 @@ onUnmounted(() => {
           placeholder="任务说明"
           :disabled="busy"
         />
+        <label class="block">
+          参考图片（选填，最多 3 张，单张不超过 5 MB）
+          <input ref="referenceInput" type="file" class="block mt-1" multiple
+            accept="image/jpeg,image/png,image/webp" :disabled="busy" @change="chooseReferences" />
+        </label>
+        <n-button v-if="referenceFiles.length || referenceError" size="small" :disabled="busy" @click="clearReferences">
+          清空图片
+        </n-button>
+        <n-alert v-if="referenceError" type="error">{{ referenceError }}</n-alert>
         <strong>检查清单（选填）</strong>
         <div
           v-for="(item, index) in checklistDrafts"
@@ -1224,21 +1361,38 @@ onUnmounted(() => {
           每个所选目标生成一个循环模板。每月日期不足时，安排在当月最后一天。
         </p>
         <p v-else-if="selected.length > 50">每批最多派发 50 项任务</p>
+        <p v-if="selected.length" aria-live="polite">
+          已选 {{ selectedStoreKey.split(',').length }} 家门店、{{
+            selected.length
+          }}
+          个执行组， 将{{ recurring ? '创建' : '发布' }} {{ selected.length }}
+          {{ recurring ? '个循环模板' : '项任务' }}。
+          <template v-if="ccUsernames.length"
+            >提交结果时将抄送 {{ ccUsernames.length }} 人。</template
+          >
+        </p>
         <n-button
           attr-type="submit"
           type="primary"
           :disabled="
             busy ||
-            (recurring ? !selected.length || !dueHours : selected.length > 50)
+            ccLoading || Boolean(referenceError) ||
+            !title.trim() ||
+            !description.trim() ||
+            !due ||
+            !selected.length ||
+            selected.length > 50 ||
+            (recurring && !dueHours)
           "
         >
-          {{ recurring ? '创建循环模板' : '派发' }}
+          {{
+            recurring ? '创建循环任务' : sourceTask ? '发布整改' : '立即发布'
+          }}
         </n-button>
       </form>
     </n-card>
 
     <n-card
-      v-if="canManage"
       v-show="activeSection === 'automation'"
       title="循环模板（最近 100 项）"
     >
@@ -1249,7 +1403,10 @@ onUnmounted(() => {
         class="border-b py-3"
       >
         <p class="font-semibold">
-          {{ schedule.title }} · {{ cadenceLabels[schedule.cadence] }} ·
+          {{ schedule.title }} ·
+          <template v-if="schedule.category"
+            >{{ schedule.category }} · </template
+          >{{ cadenceLabels[schedule.cadence] }} ·
           {{ schedule.enabled ? '启用' : '已暂停' }}
         </p>
         <p>
@@ -1267,6 +1424,12 @@ onUnmounted(() => {
         >
           {{ schedule.enabled ? '暂停' : '恢复' }}
         </n-button>
+        <n-popconfirm @positive-click="archiveSchedule(schedule)">
+          <template #trigger>
+            <n-button class="ml-2" size="small" :disabled="busy">移除</n-button>
+          </template>
+          移除后停止后续派发，已发布的任务会保留。
+        </n-popconfirm>
       </div>
     </n-card>
 
@@ -1302,8 +1465,9 @@ onUnmounted(() => {
       <p v-if="!assigned.length">当前页暂无任务</p>
       <div v-for="task in assigned" :key="task.id" class="border-b py-3">
         <p class="font-semibold">
-          {{ task.title }} · {{ task.sourceTaskId ? '整改 · ' : ''
-          }}{{ statusText(task) }}
+          {{ task.title }} ·
+          <template v-if="task.category">{{ task.category }} · </template
+          >{{ task.sourceTaskId ? '整改 · ' : '' }}{{ statusText(task) }}
         </p>
         <p>
           {{ task.store.name }} · {{ task.targetName }} · 截止
@@ -1333,7 +1497,9 @@ onUnmounted(() => {
         <p v-if="task.submission" class="whitespace-pre-wrap break-words">
           完成说明：{{ task.submission }}
         </p>
-        <n-space v-if="task.evidence.length" class="my-2">
+        <n-space v-if="task.referenceImageCount || task.evidence.length" class="my-2">
+          <n-button v-for="number in task.referenceImageCount ?? 0" :key="'reference-' + number"
+            size="small" @click="openPhoto(task.id, number - 1)">参考图 {{ number }}</n-button>
           <n-button
             v-for="(photo, index) in task.evidence"
             :key="photo.id"
@@ -1453,8 +1619,9 @@ onUnmounted(() => {
       <p v-if="!managed.length && !busy">当前页暂无符合条件的任务</p>
       <div v-for="task in managed" :key="task.id" class="border-b py-3">
         <p class="font-semibold">
-          {{ task.title }} · {{ task.sourceTaskId ? '整改 · ' : ''
-          }}{{ statusText(task) }}
+          {{ task.title }} ·
+          <template v-if="task.category">{{ task.category }} · </template
+          >{{ task.sourceTaskId ? '整改 · ' : '' }}{{ statusText(task) }}
         </p>
         <p>
           {{ task.store.name }} · {{ task.targetName }} · 截止
@@ -1495,7 +1662,9 @@ onUnmounted(() => {
         <p v-if="task.submission" class="whitespace-pre-wrap break-words">
           完成说明：{{ task.submission }}
         </p>
-        <n-space v-if="task.evidence.length" class="my-2">
+        <n-space v-if="task.referenceImageCount || task.evidence.length" class="my-2">
+          <n-button v-for="number in task.referenceImageCount ?? 0" :key="'reference-' + number"
+            size="small" @click="openPhoto(task.id, number - 1)">参考图 {{ number }}</n-button>
           <n-button
             v-for="(photo, index) in task.evidence"
             :key="photo.id"
@@ -1639,6 +1808,7 @@ onUnmounted(() => {
       </n-space>
     </n-card>
 
+    </div>
     <n-modal
       :show="Boolean(extensionDialog)"
       :mask-closable="false"
@@ -1868,6 +2038,15 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.task-category-input {
+  display: block;
+  width: min(100%, 320px);
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid var(--task-border);
+  border-radius: 4px;
+}
+
 .task-workspace {
   --task-border: #e3e9f1;
   --task-muted: #64748b;
@@ -1955,12 +2134,63 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.workspace-nav :deep(.n-tabs-nav) {
-  margin-bottom: 0;
+.workspace-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #d9e2ef;
+  border-radius: 12px;
+  background: #eef3f9;
 }
 
-.workspace-nav :deep(.n-tab-pane) {
-  display: none;
+.workspace-tab {
+  position: relative;
+  flex: 1 1 108px;
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid #ccd8e8;
+  border-radius: 8px;
+  background: #fff;
+  color: #34445e;
+  font-size: 15px;
+  font-weight: 650;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+
+.workspace-tab:hover {
+  border-color: #82a8ec;
+  background: #f5f9ff;
+  color: #174597;
+}
+
+.workspace-tab[aria-selected='true'] {
+  border-color: #6e9af0;
+  background: #dce9ff;
+  color: #174397;
+  font-weight: 750;
+}
+
+.workspace-tab[aria-selected='true']::after {
+  position: absolute;
+  inset: auto 16px 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--bc-primary, #2563eb);
+  content: '';
+}
+
+.workspace-tab:focus-visible {
+  outline: 2px solid #174397;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-tab {
+    transition: none;
+  }
 }
 
 .message-dialog {

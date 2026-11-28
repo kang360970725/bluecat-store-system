@@ -38,6 +38,32 @@ class WechatDto {
   wechatCode!: string;
 }
 
+class TaskSubscriptionDto extends WechatDto {
+  @Matches(/^[\w-]{1,128}$/)
+  templateId!: string;
+}
+
+class EmployeeTestLookupDto {
+  @IsString()
+  @Length(1, 100)
+  identifier!: string;
+}
+
+class EmployeeTestEnabledDto {
+  @IsBoolean()
+  enabled!: boolean;
+
+  @IsOptional()
+  @Matches(/^1[3-9]\d{9}$/)
+  operatorPhone?: string;
+}
+
+class EmployeeTestTicketDto {
+  @IsString()
+  @Length(1, 2048)
+  ticket!: string;
+}
+
 class BindDto extends WechatDto {
   @IsString()
   @Length(1, 128)
@@ -211,6 +237,46 @@ export class V2AttendanceController {
   @Header('Cache-Control', 'no-store')
   openWechatSession(@Body() body: WechatDto) {
     return this.attendance.openWechatSession(body.wechatCode);
+  }
+
+  @Get('wechat/task-subscription')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  taskSubscription(@CurrentUserInfo() user: CurrentUser) {
+    return this.attendance.taskSubscription(user.id);
+  }
+
+  @Get('settings/employee-test-access')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  employeeTestSettings(@CurrentUserInfo() user: CurrentUser) {
+    return this.attendance.employeeTestSettings(user.id);
+  }
+
+  @Post('wechat/test-preview')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  employeeTestPreview(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestLookupDto) {
+    return this.attendance.previewEmployeeTestAccount(body.identifier, user.id);
+  }
+
+  @Patch('settings/employee-test-access')
+  @UseGuards(JwtAuthGuard)
+  setEmployeeTestEnabled(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestEnabledDto) {
+    return this.attendance.setEmployeeTestEnabled(user.id, body.enabled, body.operatorPhone);
+  }
+
+  @Post('wechat/test-confirm-preview')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  employeeTestConfirmPreview(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestTicketDto) {
+    return this.attendance.confirmEmployeeTestPreview(body.ticket, user.id);
+  }
+
+  @Post('wechat/task-subscription')
+  @UseGuards(JwtAuthGuard)
+  subscribeToTask(@CurrentUserInfo() user: CurrentUser, @Body() body: TaskSubscriptionDto) {
+    return this.attendance.subscribeToTask(user.id, body.wechatCode, body.templateId);
   }
 
   @Post('wechat/assignments')

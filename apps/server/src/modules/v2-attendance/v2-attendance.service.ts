@@ -21,6 +21,9 @@ import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import { resolveScopedPermission } from '../../common/scoped-permission';
 import { PrismaService } from '../../database/prisma.service';
 import {
+  activeEmployeeTestAccess, activeTestTarget, employeeTestOperatorScope, employeeTestStoreName, testTargetScope
+} from '../../common/employee-test-access';
+import {
   digest,
   isClockInTime,
   normalizeBssid,
@@ -56,6 +59,7 @@ const attendanceRecordSelect = {
 
 @Injectable()
 export class V2AttendanceService {
+  private taskToken?: { appId: string; token: string; expiresAt: number };
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -290,6 +294,76 @@ export class V2AttendanceService {
       binding.accountId,
       binding.createdAt.toISOString()
     );
+  }
+
+  async employeeTestSettings(adminId: string) {
+    await this.requireAdmin(adminId);
+    const settings = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
+    const operator = settings?.operatorAccountId
+      ? await this.prisma.v2Account.findFirst({
+          where: { id: settings.operatorAccountId, ...employeeTestOperatorScope },
+          select: { username: true }
+        })
+      : null;
+    return { enabled: settings?.enabled ?? false, operatorPhone: operator?.username ?? '' };
+  }
+
+  async setEmployeeTestEnabled(adminId: string, enabled: boolean, operatorPhone?: string) {
+    await this.requireAdmin(adminId);
+    if (!enabled) {
+      await this.prisma.v2EmployeeTestAccess.updateMany({
+        where: { id: 1, enabled: true },
+        data: { enabled: false, updatedBy: adminId }
+      });
+      return { enabled: false };
+    }
+    if (!operatorPhone) throw new BadRequestException('请填写测试人员的登录手机号');
+    const operator = await this.prisma.v2Account.findFirst({
+      where: { username: operatorPhone, ...employeeTestOperatorScope },
+      select: { id: true }
+    });
+    if (!operator) throw new BadRequestException('请选择已启用且已完成初始密码设置的员工账号');
+    const stores = await this.prisma.v2Store.findMany({
+      where: { ...operatingStore, name: { contains: employeeTestStoreName } },
+      select: { id: true }, take: 2
+    });
+    if (stores.length !== 1) throw new BadRequestException('无法唯一识别中海国际店');
+    const data = { enabled: true, storeId: stores[0].id, operatorAccountId: operator.id, updatedBy: adminId };
+    await this.prisma.v2EmployeeTestAccess.upsert({
+      where: { id: 1 },
+      create: { id: 1, ...data, targetAccountIds: [] },
+      update: data
+    });
+    return { enabled: true };
+  }
+
+  async previewEmployeeTestAccount(identifier: string, operatorId: string) {
+    const config = await activeEmployeeTestAccess(this.prisma, operatorId);
+    if (!config) throw new ForbiddenException('测试模式未开启或当前账号无测试权限');
+    const key = identifier.trim();
+    const isPhone = /^1[3-9]\d{9}$/.test(key);
+    const scope = testTargetScope(config.storeId);
+    const matches = await this.prisma.v2Account.findMany({
+      where: {
+        ...scope,
+        AND: isPhone ? { username: key } : { employee: { employeeNo: key } }
+      },
+      select: { id: true }, take: 2
+    });
+    if (matches.length > 1) throw new BadRequestException('查询到多个员工，请使用登录手机号');
+    const target = matches.length === 1
+      ? await activeTestTarget(this.prisma, matches[0].id, operatorId)
+      : null;
+    if (!target) throw new ForbiddenException('该账号未获准免密码测试');
+    const store = await this.prisma.v2Store.findUniqueOrThrow({
+      where: { id: target.storeId }, select: { name: true }
+    });
+    const ticket = await this.auth.createEmployeeTestPreviewTicket(target.id, target.policyVersion, operatorId);
+    return { name: target.name, storeName: store.name, ticket };
+  }
+
+  confirmEmployeeTestPreview(ticket: string, operatorId: string) {
+    return this.auth.confirmEmployeeTestPreview(ticket, operatorId);
   }
 
   async assignments(wechatCode: string, workDate?: string) {
@@ -875,7 +949,7 @@ export class V2AttendanceService {
       throw new ForbiddenException('仅超级管理员可管理考勤试点');
   }
 
-  private async wechatSubject(code: string) {
+  private async wechatCredentials() {
     const settings = await this.prisma.v2AttendanceSettings.findUnique({
       where: { id: 1 }
     });
@@ -886,6 +960,107 @@ export class V2AttendanceService {
       : this.config.get<string>('ATTENDANCE_WECHAT_APP_SECRET');
     if (!appid || !secret)
       throw new ServiceUnavailableException('员工小程序尚未配置');
+    return { appid, secret };
+  }
+
+  async taskWechatTemplate() {
+    const templateId = this.config.get<string>('TASK_WECHAT_TEMPLATE_ID')?.trim();
+    const titleField = this.config.get<string>('TASK_WECHAT_TITLE_FIELD')?.trim();
+    const timeField = this.config.get<string>('TASK_WECHAT_TIME_FIELD')?.trim();
+    if (!templateId || !/^[\w-]{1,128}$/.test(templateId) ||
+        !titleField || !/^thing\d+$/.test(titleField) ||
+        !timeField || !/^time\d+$/.test(timeField)) return null;
+    const { appid } = await this.wechatCredentials();
+    return { appid, templateId, titleField, timeField, key: digest(`${appid}:${templateId}`) };
+  }
+
+  async taskSubscription(accountId: string) {
+    const template = await this.taskWechatTemplate();
+    if (!template) return { templateId: null, subscribed: false };
+    const binding = await this.prisma.v2AttendanceWechatBinding.findUnique({
+      where: { accountId },
+      select: { taskSubscribedAt: true, taskSubscriptionKey: true }
+    });
+    return {
+      templateId: binding ? template.templateId : null,
+      subscribed: Boolean(binding?.taskSubscribedAt && binding.taskSubscriptionKey === template.key)
+    };
+  }
+
+  async subscribeToTask(accountId: string, code: string, templateId: string) {
+    const template = await this.taskWechatTemplate();
+    if (!template || template.templateId !== templateId)
+      throw new ConflictException('任务提醒模板已更新，请刷新后重试');
+    const { appid, openid, subject } = await this.wechatIdentity(code);
+    if (appid !== template.appid) throw new ConflictException('小程序配置已更新，请重试');
+    const result = await this.prisma.v2AttendanceWechatBinding.updateMany({
+      where: { accountId, subject },
+      data: {
+        taskOpenIdCipher: this.encryptSetting(openid),
+        taskSubscribedAt: new Date(),
+        taskSubscriptionKey: template.key
+      }
+    });
+    if (!result.count) throw new ForbiddenException('当前微信与员工账号绑定不一致');
+    return { subscribed: true };
+  }
+
+  async taskWechatAccessToken(expectedAppId: string) {
+    const { appid, secret } = await this.wechatCredentials();
+    if (appid !== expectedAppId) throw new Error('WeChat app configuration changed');
+    if (this.taskToken?.appId === appid && this.taskToken.expiresAt > Date.now())
+      return this.taskToken.token;
+    const response = await fetch('https://api.weixin.qq.com/cgi-bin/stable_token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant_type: 'client_credential', appid, secret }),
+      signal: AbortSignal.timeout(5_000)
+    });
+    const result = (await response.json()) as { access_token?: string; expires_in?: number };
+    if (!response.ok || !result.access_token || !result.expires_in)
+      throw new Error('WeChat access token unavailable');
+    this.taskToken = {
+      appId: appid, token: result.access_token,
+      expiresAt: Date.now() + Math.max(0, result.expires_in - 120) * 1000
+    };
+    return this.taskToken.token;
+  }
+
+  async sendTaskWechatMessage(
+    token: string, openIdCipher: string,
+    template: NonNullable<Awaited<ReturnType<V2AttendanceService['taskWechatTemplate']>>>,
+    task: { id: string; title: string; dueAt: Date }
+  ) {
+    const state = this.config.get<string>('TASK_WECHAT_MINIPROGRAM_STATE');
+    const url = new URL('https://api.weixin.qq.com/cgi-bin/message/subscribe/send');
+    url.searchParams.set('access_token', token);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        touser: this.decryptSetting(openIdCipher),
+        template_id: template.templateId,
+        page: `tasks/index/index?taskId=${encodeURIComponent(task.id)}`,
+        miniprogram_state: state === 'trial' || state === 'developer' ? state : 'formal',
+        lang: 'zh_CN',
+        data: {
+          [template.titleField]: { value: [...task.title].slice(0, 20).join('') },
+          [template.timeField]: { value: chinaCsvTime(task.dueAt).slice(0, 16) }
+        }
+      }),
+      signal: AbortSignal.timeout(5_000)
+    });
+    const result = (await response.json()) as { errcode?: number };
+    if (!response.ok || result.errcode !== 0)
+      throw new Error(`WeChat task message rejected (${Number(result.errcode) || response.status})`);
+  }
+
+  private async wechatSubject(code: string) {
+    return (await this.wechatIdentity(code)).subject;
+  }
+
+  private async wechatIdentity(code: string) {
+    const { appid, secret } = await this.wechatCredentials();
     const url = new URL('https://api.weixin.qq.com/sns/jscode2session');
     url.search = new URLSearchParams({
       appid,
@@ -908,6 +1083,6 @@ export class V2AttendanceService {
     ) {
       throw new UnauthorizedException('微信登录已失效，请重新登录');
     }
-    return digest(`${appid}:${result.openid}`);
+    return { appid, openid: result.openid, subject: digest(`${appid}:${result.openid}`) };
   }
 }

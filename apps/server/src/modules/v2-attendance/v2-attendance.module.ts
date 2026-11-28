@@ -7,6 +7,7 @@ import { AuthModule } from '../auth/auth.module';
 @Module({
   imports: [AuthModule],
   controllers: [V2AttendanceController],
-  providers: [V2AttendanceService]
+  providers: [V2AttendanceService],
+  exports: [V2AttendanceService]
 })
 export class V2AttendanceModule {}

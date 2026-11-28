@@ -217,12 +217,15 @@
                 v-model:checked="form.createLoginAccount"
                 >同步开通登录账号</n-checkbox
               ><template v-if="form.createLoginAccount"
-                ><n-grid :cols="2" :x-gap="12" class="login-fields"
+                ><n-checkbox v-if="canCreateEmployeeTestAccount" v-model:checked="form.testAccount" class="ml-3">
+                  专用测试账号
+                </n-checkbox>
+                <n-grid :cols="2" :x-gap="12" class="login-fields"
                   ><n-form-item-gi label="昵称"
                     ><n-input
                       v-model:value="form.loginNickname"
                       placeholder="默认使用员工姓名" /></n-form-item-gi
-                  ><n-form-item-gi label="初始密码"
+                  ><n-form-item-gi v-if="!canCreateEmployeeTestAccount || !form.testAccount" label="初始密码"
                     ><n-input
                       v-model:value="form.loginPassword"
                       type="password"
@@ -231,7 +234,7 @@
                 ><n-form-item label="账号角色">
                   <n-select v-model:value="form.loginRoleIds" :options="employeeRoleOptions" multiple filterable />
                 </n-form-item
-                ><small class="account-hint">首次登录必须修改密码。</small
+                ><small class="account-hint">{{ canCreateEmployeeTestAccount && form.testAccount ? '系统生成 TEST- 员工编号，可在测试模式中使用。' : '首次登录必须修改密码。' }}</small
                 ></template
               ></template
             >
@@ -1018,6 +1021,11 @@ function changeAssignmentType(value: string) {
     delete form.organizationPositionId;
   }
 }
+
+const canCreateEmployeeTestAccount = computed(() =>
+  isSuperAdmin.value && form.assignmentType !== 'HEAD_OFFICE' &&
+  storeOptions.value.some((store) => store.value === form.storeId && store.label.includes('中海国际'))
+);
 function openAction(action: string, employee: V2EmployeeItem) {
   selectedEmployee.value = employee;
   reset(action);
@@ -1150,10 +1158,11 @@ async function save() {
   saving.value = true;
   try {
     if (kind.value === 'employee' || (kind.value === 'editEmployee' && selectedEmployee.value)) {
-      const { loginRoleIds, openEmployeeAccount, loginPassword, loginNickname, ...details } = form;
+      const { loginRoleIds, openEmployeeAccount, loginPassword, loginNickname, testAccount, ...details } = form;
       if (kind.value === 'employee') {
         await createV2Employee({
           ...details,
+          ...(canCreateEmployeeTestAccount.value && details.createLoginAccount && testAccount ? { testAccount: true } : {}),
           ...(details.createLoginAccount ? { loginPassword, loginNickname } : {}),
           ...(isSuperAdmin.value && details.createLoginAccount && loginRoleIds ? { loginRoleIds } : {})
         });
