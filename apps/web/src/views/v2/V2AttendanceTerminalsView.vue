@@ -20,6 +20,16 @@ const secureConnection = window.isSecureContext;
 const settingsSaved = ref(false);
 const errorMessage = ref('');
 const busy = ref(false);
+const testPath = settingsPath + '/employee-test-access';
+interface EmployeeTestSettings {
+  enabled: boolean;
+  operator: string;
+  targets: string[];
+}
+const testEnabled = ref(false);
+const testOperator = ref('');
+const testTargets = ref('');
+const testSettingsSaved = ref(false);
 
 function applySettings(value: AttendanceSettings) {
   settings.value = value;
@@ -67,12 +77,32 @@ function saveSettings() {
   });
 }
 
-onMounted(
-  () =>
-    void run(async () =>
-      applySettings(await request<AttendanceSettings>(settingsPath))
-    )
-);
+function applyTestSettings(value: EmployeeTestSettings) {
+  testEnabled.value = value.enabled;
+  testOperator.value = value.operator;
+  testTargets.value = value.targets.join('\n');
+}
+
+function saveTestSettings() {
+  void run(async () => {
+    testSettingsSaved.value = false;
+    const value = await request<EmployeeTestSettings>(testPath, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        enabled: testEnabled.value,
+        operator: testOperator.value.trim(),
+        targets: testTargets.value.split(/\r?\n/).map((target) => target.trim()).filter(Boolean)
+      })
+    });
+    applyTestSettings(value);
+    testSettingsSaved.value = true;
+  });
+}
+
+onMounted(() => void run(async () => {
+  applySettings(await request<AttendanceSettings>(settingsPath));
+  applyTestSettings(await request<EmployeeTestSettings>(testPath));
+}));
 </script>
 
 <template>
@@ -80,7 +110,7 @@ onMounted(
     <h1 class="text-xl font-semibold">小程序考勤配置</h1>
     <n-alert type="info" :bordered="false">
       门店 Wi-Fi BSSID
-      由店长在对应门店工作台的「排班与考勤」中维护。本页只配置微信小程序和全局打卡时间窗口。
+      由店长在对应门店工作台的「排班与考勤」中维护。
     </n-alert>
     <n-card v-if="settings" title="微信与打卡窗口" size="small">
       <n-alert v-if="!secureConnection" type="warning">
@@ -132,6 +162,26 @@ onMounted(
             >保存考勤配置</n-button
           >
           <span v-if="settingsSaved" role="status">已保存</span>
+        </n-space>
+      </n-form>
+    </n-card>
+    <n-card v-if="settings" title="中海国际店测试账号" size="small">
+      <p class="mb-4">仅指定的已绑定微信可切换名单中的测试账号。测试身份有效 30 分钟，关闭后立即失效。</p>
+      <n-form>
+        <n-form-item label="开启免密码测试">
+          <n-switch v-model:value="testEnabled" :disabled="busy" @update:value="testSettingsSaved = false" />
+        </n-form-item>
+        <n-form-item label="测试操作员手机号">
+          <n-input v-model:value="testOperator" maxlength="20" placeholder="填写已绑定微信的员工账号" :disabled="busy || !testEnabled" />
+        </n-form-item>
+        <n-form-item label="测试名单（每行一个手机号或员工编码，最多 20 个）">
+          <n-input v-model:value="testTargets" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" :disabled="busy || !testEnabled" />
+        </n-form-item>
+        <n-space align="center">
+          <n-button type="primary" :disabled="busy || (testEnabled && (!testOperator.trim() || !testTargets.trim()))" @click="saveTestSettings">
+            保存测试设置
+          </n-button>
+          <span v-if="testSettingsSaved" role="status">已保存</span>
         </n-space>
       </n-form>
     </n-card>

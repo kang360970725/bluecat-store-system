@@ -3,11 +3,15 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import type { CurrentUser } from '@bluecat/shared';
+import type { Request } from 'express';
 import { PrismaService } from '../../database/prisma.service';
 import { readDirectAccountAccess } from '../direct-account-access';
+import { activeTestTarget, employeeTestRouteAllowed } from '../employee-test-access';
 
 type JwtPayload = CurrentUser & {
   sub: string;
+  employeeTestOperatorSubject?: string;
+  employeeTestPolicyVersion?: string;
 };
 
 @Injectable()
@@ -16,11 +20,25 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
+      passReqToCallback: true,
       secretOrKey: config.getOrThrow<string>('jwt.secret')
     });
   }
 
-  async validate(payload: JwtPayload): Promise<CurrentUser> {
+  async validate(request: Pick<Request, 'method' | 'originalUrl'>, payload: JwtPayload): Promise<CurrentUser> {
+    if (payload.employeeTestSession || payload.employeeTestOperatorSubject) {
+      const subject = payload.employeeTestOperatorSubject;
+      if (!subject || !employeeTestRouteAllowed(request.method, request.originalUrl.split('?')[0]))
+        throw new UnauthorizedException('测试会话仅能使用员工小程序功能');
+      const target = await activeTestTarget(this.prisma, payload.sub, subject);
+      if (!target || target.username !== payload.username || target.policyVersion !== payload.employeeTestPolicyVersion)
+        throw new UnauthorizedException('测试账号授权已失效');
+      return {
+        id: target.id, username: target.username, nickname: target.employee?.name ?? '',
+        employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
+        accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true
+      };
+    }
     if (payload.wechatBoundAt && !(await this.prisma.v2AttendanceWechatBinding.findFirst({
       where: { createdAt: new Date(payload.wechatBoundAt), accountId: payload.sub },
       select: { accountId: true }

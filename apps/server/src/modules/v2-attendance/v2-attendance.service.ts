@@ -20,6 +20,8 @@ import { compare } from 'bcryptjs';
 import { isLiveSuperAdmin } from '../../common/live-super-admin';
 import { resolveScopedPermission } from '../../common/scoped-permission';
 import { PrismaService } from '../../database/prisma.service';
+import { activeTestTarget, testAccountIds, testTargetScope } from '../../common/employee-test-access';
+import type { CurrentUser } from '@bluecat/shared';
 import {
   digest,
   isClockInTime,
@@ -293,16 +295,115 @@ export class V2AttendanceService {
     );
   }
 
-  async assignments(wechatCode: string, workDate?: string) {
+  async employeeTestSettings(adminId: string) {
+    await this.requireAdmin(adminId);
+    const settings = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
+    if (!settings) return { enabled: false, operator: '', targets: [] };
+    const ids = testAccountIds(settings.targetAccountIds);
+    const accounts = await this.prisma.v2Account.findMany({
+      where: { id: { in: [settings.operatorAccountId, ...ids] } },
+      select: { id: true, username: true, employee: { select: { employeeNo: true } } }
+    });
+    return {
+      enabled: settings.enabled,
+      operator: accounts.find((item) => item.id === settings.operatorAccountId)?.username ?? '',
+      targets: ids.flatMap((id) => {
+        const item = accounts.find((account) => account.id === id);
+        return item ? [item.employee?.employeeNo ?? item.username] : [];
+      })
+    };
+  }
+
+  async saveEmployeeTestSettings(adminId: string, enable: boolean, operator: string, identifiers: string[]) {
+    await this.requireAdmin(adminId);
+    if (!enable) {
+      await this.prisma.v2EmployeeTestAccess.updateMany({
+        where: { id: 1 }, data: { enabled: false, updatedBy: adminId }
+      });
+      return this.employeeTestSettings(adminId);
+    }
+    const stores = await this.prisma.v2Store.findMany({
+      where: { ...operatingStore, name: { contains: '中海国际' } },
+      select: { id: true }, take: 2
+    });
+    if (stores.length !== 1) throw new BadRequestException('无法唯一识别中海国际店');
+    const storeId = stores[0].id;
+    const owner = await this.prisma.v2Account.findFirst({
+      where: {
+        ...activeAccount, username: operator.trim(), mustChangePassword: false,
+        employee: activeEmployee, attendanceWechatBinding: { isNot: null }
+      },
+      select: { id: true }
+    });
+    if (!owner) throw new BadRequestException('操作员必须是已绑定微信的有效员工账号');
+    const keys = [...new Set(identifiers.map((value) => value.trim()).filter(Boolean))];
+    if (keys.length === 0) throw new BadRequestException('请填写指定测试账号');
+    const targets = await this.prisma.v2Account.findMany({
+      where: {
+        ...testTargetScope(storeId),
+        OR: [{ username: { in: keys } }, { employee: { employeeNo: { in: keys } } }]
+      },
+      select: { id: true, username: true, employee: { select: { employeeNo: true, phone: true } } }
+    });
+    const ids = new Set<string>();
+    for (const key of keys) {
+      const matching = targets.filter((target) =>
+        target.employee?.phone === target.username &&
+        (target.username === key || target.employee.employeeNo === key)
+      );
+      if (matching.length !== 1 || matching[0].id === owner.id)
+        throw new BadRequestException('请使用中海国际店有效测试账号的手机号或员工编码，且操作员不能同时是测试账号');
+      ids.add(matching[0].id);
+    }
+    const data = { enabled: true, storeId, operatorAccountId: owner.id, targetAccountIds: [...ids], updatedBy: adminId };
+    await this.prisma.v2EmployeeTestAccess.upsert({
+      where: { id: 1 }, create: { id: 1, ...data }, update: data
+    });
+    return this.employeeTestSettings(adminId);
+  }
+
+  async previewEmployeeTestAccount(wechatCode: string, identifier: string) {
+    const subject = await this.wechatSubject(wechatCode);
+    const config = await this.prisma.v2EmployeeTestAccess.findUnique({ where: { id: 1 } });
+    if (!config?.enabled) throw new ForbiddenException('当前微信无法使用测试账号入口');
+    const operator = await this.prisma.v2AttendanceWechatBinding.findFirst({
+      where: { accountId: config.operatorAccountId, subject, account: activeAccount },
+      select: { accountId: true }
+    });
+    if (!operator) throw new ForbiddenException('当前微信无法使用测试账号入口');
+    const key = identifier.trim();
+    const matches = await this.prisma.v2Account.findMany({
+      where: {
+        id: { in: testAccountIds(config.targetAccountIds) },
+        ...testTargetScope(config.storeId),
+        OR: [{ username: key }, { employee: { employeeNo: key } }]
+      },
+      select: { id: true }, take: 2
+    });
+    const target = matches.length === 1
+      ? await activeTestTarget(this.prisma, matches[0].id, subject)
+      : null;
+    if (!target?.employee) throw new ForbiddenException('该账号未获准免密码测试');
+    const store = await this.prisma.v2Store.findUniqueOrThrow({
+      where: { id: target.storeId }, select: { name: true }
+    });
+    return { accountId: target.id, name: target.employee.name, storeName: store.name };
+  }
+
+  async openEmployeeTestAccount(wechatCode: string, accountId: string) {
+    return this.auth.openEmployeeTestSession(accountId, await this.wechatSubject(wechatCode));
+  }
+
+  async assignments(wechatCode: string, workDate?: string, testActor?: CurrentUser) {
     const employeeId = await this.employeeFor(
-      await this.wechatSubject(wechatCode)
+      await this.wechatSubject(wechatCode), this.prisma, testActor
     );
     const today = this.localDate(new Date());
     const yesterday = new Date(today.getTime() - 86_400_000);
     const tomorrow = new Date(today.getTime() + 86_400_000);
     return this.prisma.v2ScheduleAssignment.findMany({
       where: {
-        ...this.assignmentScope(employeeId),
+        ...this.assignmentScope(employeeId, testActor?.storeId),
         workDate: workDate
           ? new Date(workDate)
           : { gte: yesterday, lte: tomorrow }
@@ -344,7 +445,8 @@ export class V2AttendanceService {
     wechatCode: string,
     assignmentId: string,
     bssid: string,
-    kind: V2AttendancePunchKind
+    kind: V2AttendancePunchKind,
+    testActor?: CurrentUser
   ) {
     const settings = await this.prisma.v2AttendanceSettings.findUnique({
       where: { id: 1 }
@@ -364,9 +466,9 @@ export class V2AttendanceService {
     const normalizedBssid = normalizeBssid(bssid);
     const subject = await this.wechatSubject(wechatCode);
     return this.write(async (tx) => {
-      const employeeId = await this.employeeFor(subject, tx);
+      const employeeId = await this.employeeFor(subject, tx, testActor);
       const assignment = await tx.v2ScheduleAssignment.findFirst({
-        where: { id: assignmentId, ...this.assignmentScope(employeeId) },
+        where: { id: assignmentId, ...this.assignmentScope(employeeId, testActor?.storeId) },
         include: {
           shift: true,
           period: true,
@@ -441,7 +543,8 @@ export class V2AttendanceService {
     assignmentId: string,
     kind: V2AttendancePunchKind,
     requestedTime: string,
-    reason: string
+    reason: string,
+    testActor?: CurrentUser
   ) {
     const time = new Date(requestedTime);
     if (
@@ -452,9 +555,9 @@ export class V2AttendanceService {
       throw new BadRequestException('请填写有效的补卡时间和原因');
     const subject = await this.wechatSubject(wechatCode);
     return this.write(async (tx) => {
-      const employeeId = await this.employeeFor(subject, tx);
+      const employeeId = await this.employeeFor(subject, tx, testActor);
       const assignment = await tx.v2ScheduleAssignment.findFirst({
-        where: { id: assignmentId, ...this.assignmentScope(employeeId) },
+        where: { id: assignmentId, ...this.assignmentScope(employeeId, testActor?.storeId) },
         include: { shift: true, attendancePunches: { where: { kind } } }
       });
       if (!assignment?.shift)
@@ -812,13 +915,14 @@ export class V2AttendanceService {
   }
 
   private assignmentScope(
-    employeeId: string
+    employeeId: string,
+    storeId?: string | null
   ): Prisma.V2ScheduleAssignmentWhereInput {
     return {
       employeeId,
       isRest: false,
       shiftId: { not: null },
-      period: { status: { in: ['PUBLISHED', 'LOCKED'] }, store: operatingStore }
+      period: { status: { in: ['PUBLISHED', 'LOCKED'] }, store: operatingStore, storeId: storeId ?? undefined }
     };
   }
 
@@ -830,8 +934,15 @@ export class V2AttendanceService {
 
   private async employeeFor(
     subject: string,
-    db: Prisma.TransactionClient = this.prisma
+    db: Prisma.TransactionClient = this.prisma,
+    testActor?: CurrentUser
   ) {
+    if (testActor) {
+      const target = testActor.employeeTestSession && await activeTestTarget(db, testActor.id, subject);
+      if (!target || testActor.storeId !== target.storeId)
+        throw new ForbiddenException('当前微信或测试账号的授权已失效');
+      return target.employeeId;
+    }
     const binding = await db.v2AttendanceWechatBinding.findFirst({
       where: {
         subject,

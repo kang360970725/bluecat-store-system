@@ -6,6 +6,7 @@ import type { CurrentUser, LoginResult } from '@bluecat/shared';
 import { readDirectAccountAccess, resolveAccountStoreIds } from '../../common/direct-account-access';
 import { PrismaService } from '../../database/prisma.service';
 import { ChangePasswordDto, LoginDto } from './dto';
+import { activeTestTarget } from '../../common/employee-test-access';
 
 @Injectable()
 export class AuthService {
@@ -119,6 +120,24 @@ export class AuthService {
 
   openWechatSession(accountId: string, wechatBoundAt: string) {
     return this.loginV2({ accountId, wechatBoundAt }, {});
+  }
+
+  async openEmployeeTestSession(accountId: string, operatorSubject: string): Promise<LoginResult> {
+    const target = await activeTestTarget(this.prisma, accountId, operatorSubject);
+    if (!target) throw new UnauthorizedException('测试账号不可用');
+    const user: CurrentUser = {
+      id: target.id, username: target.username, nickname: target.employee?.name ?? '',
+      employeeId: target.employeeId, storeId: target.storeId, orgId: null, positionId: null,
+      accessibleStoreIds: [target.storeId], roles: [], permissions: [], employeeTestSession: true
+    };
+    const accessToken = await this.jwtService.signAsync(
+      { ...user, sub: user.id, employeeTestOperatorSubject: operatorSubject, employeeTestPolicyVersion: target.policyVersion },
+      { secret: this.config.getOrThrow<string>('jwt.secret'), expiresIn: '30m' }
+    );
+    await this.prisma.loginLog.create({
+      data: { accountType: 'V2_EMPLOYEE_TEST', accountId: user.id, username: user.username, displayName: user.nickname }
+    });
+    return { accessToken, refreshToken: '', expiresIn: 1800, user };
   }
 
   private async loginV2(

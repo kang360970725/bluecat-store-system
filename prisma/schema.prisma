@@ -2672,3 +2672,15 @@ model V2AttendanceSettings {
   @@map("v2_attendance_settings")
 }
 
+model V2EmployeeTestAccess {
+  id                Int      @id
+  enabled           Boolean  @default(false)
+  storeId           String   @map("store_id") @db.VarChar(191)
+  operatorAccountId String   @map("operator_account_id") @db.VarChar(191)
+  targetAccountIds  Json     @map("target_account_ids")
+  updatedBy         String   @map("updated_by") @db.VarChar(191)
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("v2_employee_test_access")
+}
+

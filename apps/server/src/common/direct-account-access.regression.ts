@@ -39,6 +39,8 @@ const db = {
 
 async function run() {
   const strategy = new JwtStrategy(new ConfigService({ jwt: { secret: 'fixture' } }), db);
+  const validate = (payload: Parameters<JwtStrategy['validate']>[1]) =>
+    strategy.validate({ method: 'GET', originalUrl: '/api/auth/me' }, payload);
   const oldToken = {
     sub: 'account',
     username: account.username,
@@ -51,13 +53,13 @@ async function run() {
     employeeId: 'employee',
     storeIds: ['store-a']
   });
-  assert.deepEqual((await strategy.validate(oldToken)).accessibleStoreIds, ['store-a']);
-  assert.deepEqual((await strategy.validate(oldToken)).roles, ['manager']);
+  assert.deepEqual((await validate(oldToken)).accessibleStoreIds, ['store-a']);
+  assert.deepEqual((await validate(oldToken)).roles, ['manager']);
 
   const wechatToken = { ...oldToken, wechatBoundAt: '2026-11-15T00:00:00.000Z' };
-  assert.equal((await strategy.validate(wechatToken)).wechatBoundAt, wechatToken.wechatBoundAt);
+  assert.equal((await validate(wechatToken)).wechatBoundAt, wechatToken.wechatBoundAt);
   wechatBindingExists = false;
-  await assert.rejects(strategy.validate(wechatToken), /微信绑定已失效/);
+  await assert.rejects(validate(wechatToken), /微信绑定已失效/);
 
   account.dataScope = 'ALL_STORES';
   account.employee.employments = [];
@@ -66,38 +68,38 @@ async function run() {
     employeeId: 'employee',
     storeIds: ['managed-store']
   });
-  const restoredSession = await strategy.validate({ ...oldToken, storeId: 'store-a' });
+  const restoredSession = await validate({ ...oldToken, storeId: 'store-a' });
   assert.deepEqual(restoredSession.accessibleStoreIds, ['managed-store']);
   assert.equal(restoredSession.storeId, 'managed-store');
   account.usesAccountRoles = false;
-  assert.deepEqual((await strategy.validate(oldToken)).accessibleStoreIds, ['managed-store']);
+  assert.deepEqual((await validate(oldToken)).accessibleStoreIds, ['managed-store']);
   account.usesAccountRoles = true;
   account.employee.organizationEmployments = [];
-  assert.deepEqual((await strategy.validate(oldToken)).accessibleStoreIds, []);
+  assert.deepEqual((await validate(oldToken)).accessibleStoreIds, []);
   assert.equal(await resolveScopedPermission('account', permission, db), null);
 
   account.username = account.employee.phone = '13800000002';
-  await assert.rejects(strategy.validate(oldToken), /停用/);
+  await assert.rejects(validate(oldToken), /停用/);
   account.username = account.employee.phone = oldToken.username;
 
   account.roles = [];
   assert.equal(await resolveScopedPermission('account', permission, db), null);
-  assert.deepEqual((await strategy.validate(oldToken)).permissions, []);
+  assert.deepEqual((await validate(oldToken)).permissions, []);
   account.status = 'DISABLED';
-  await assert.rejects(strategy.validate(oldToken), /停用/);
+  await assert.rejects(validate(oldToken), /停用/);
   account.usesAccountRoles = false;
-  await assert.rejects(strategy.validate(oldToken), /停用/);
+  await assert.rejects(validate(oldToken), /停用/);
   account.status = 'ACTIVE';
-  assert.deepEqual((await strategy.validate(oldToken)).roles, oldToken.roles);
+  assert.deepEqual((await validate(oldToken)).roles, oldToken.roles);
   v2AccountExists = false;
-  assert.deepEqual((await strategy.validate(oldToken)).roles, oldToken.roles);
+  assert.deepEqual((await validate(oldToken)).roles, oldToken.roles);
   assert.deepEqual(await resolveScopedPermission('account', permission, db), {
     employeeId: null,
     storeIds: null
   });
   legacyEnabled = false;
   assert.equal(await resolveScopedPermission('account', permission, db), null);
-  await assert.rejects(strategy.validate(oldToken), /停用/);
+  await assert.rejects(validate(oldToken), /停用/);
   const terminalAdminDb = {
     v2Account: { findUnique: async () => null },
     user: {
@@ -109,6 +111,45 @@ async function run() {
   } as unknown as PrismaService;
   assert.equal(await isLiveSuperAdmin(terminalAdminDb, 'legacy-admin'), true);
   assert.equal(await isLiveSuperAdmin(terminalAdminDb, 'employee'), false);
+  const testPolicy = {
+    enabled: true, operatorAccountId: 'operator', targetAccountIds: ['test-account'],
+    storeId: 'zhonghai', updatedAt: new Date('2026-11-28T08:00:00Z')
+  };
+  const testDb = {
+    v2EmployeeTestAccess: { findUnique: async () => testPolicy },
+    v2AttendanceWechatBinding: {
+      findFirst: async ({ where }: { where: { subject: string; accountId: string } }) =>
+        where.subject === 'authorized-wechat' && where.accountId === 'operator' ? { accountId: 'operator' } : null
+    },
+    v2Account: {
+      findFirst: async ({ where }: { where: { id: string; dataScope: string } }) => {
+        assert.equal(where.dataScope, 'EMPLOYEE_STORE');
+        return where.id === 'test-account'
+          ? { id: where.id, employeeId: 'test-employee', username: account.username,
+              employee: { name: '测试员工', phone: account.username } }
+          : null;
+      }
+    }
+  } as unknown as PrismaService;
+  const testStrategy = new JwtStrategy(new ConfigService({ jwt: { secret: 'fixture' } }), testDb);
+  const inboxRequest = { method: 'GET', originalUrl: '/api/v2/operational-tasks/inbox' };
+  const testToken = {
+    ...oldToken, sub: 'test-account', employeeTestSession: true,
+    employeeTestOperatorSubject: 'authorized-wechat',
+    employeeTestPolicyVersion: testPolicy.updatedAt.toISOString()
+  };
+  const testUser = await testStrategy.validate(inboxRequest, testToken);
+  assert.equal(testUser.employeeId, 'test-employee');
+  assert.deepEqual(testUser.accessibleStoreIds, ['zhonghai']);
+  assert.deepEqual(testUser.permissions, []);
+  await assert.rejects(testStrategy.validate(inboxRequest, { ...testToken, sub: 'regular-employee' }), /授权已失效/);
+  await assert.rejects(testStrategy.validate(inboxRequest, { ...testToken, employeeTestOperatorSubject: 'different-wechat' }), /授权已失效/);
+  await assert.rejects(testStrategy.validate({ method: 'POST', originalUrl: '/api/auth/switch-store' }, testToken), /仅能使用/);
+  testPolicy.enabled = false;
+  await assert.rejects(testStrategy.validate(inboxRequest, testToken), /授权已失效/);
+  testPolicy.enabled = true;
+  testPolicy.updatedAt = new Date('2026-11-28T08:01:00Z');
+  await assert.rejects(testStrategy.validate(inboxRequest, testToken), /授权已失效/);
   console.log('Explicit account role regression checks passed');
 }
 

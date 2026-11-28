@@ -43,6 +43,33 @@ class TaskSubscriptionDto extends WechatDto {
   templateId!: string;
 }
 
+class EmployeeTestLookupDto extends WechatDto {
+  @IsString()
+  @Length(1, 100)
+  identifier!: string;
+}
+
+class EmployeeTestConfirmDto extends WechatDto {
+  @IsString()
+  @Length(1, 100)
+  accountId!: string;
+}
+
+class EmployeeTestSettingsDto {
+  @IsBoolean()
+  enabled!: boolean;
+
+  @IsString()
+  @Length(0, 20)
+  operator!: string;
+
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Length(1, 100, { each: true })
+  targets!: string[];
+}
+
 class BindDto extends WechatDto {
   @IsString()
   @Length(1, 128)
@@ -223,6 +250,52 @@ export class V2AttendanceController {
   @UseGuards(JwtAuthGuard)
   taskSubscription(@CurrentUserInfo() user: CurrentUser) {
     return this.attendance.taskSubscription(user.id);
+  }
+
+  @Get('settings/employee-test-access')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  employeeTestSettings(@CurrentUserInfo() user: CurrentUser) {
+    return this.attendance.employeeTestSettings(user.id);
+  }
+
+  @Patch('settings/employee-test-access')
+  @UseGuards(JwtAuthGuard)
+  saveEmployeeTestSettings(@CurrentUserInfo() user: CurrentUser, @Body() body: EmployeeTestSettingsDto) {
+    return this.attendance.saveEmployeeTestSettings(user.id, body.enabled, body.operator, body.targets);
+  }
+
+  @Post('wechat/test-preview')
+  @Header('Cache-Control', 'no-store')
+  employeeTestPreview(@Body() body: EmployeeTestLookupDto) {
+    return this.attendance.previewEmployeeTestAccount(body.wechatCode, body.identifier);
+  }
+
+  @Post('wechat/test-confirm')
+  @Header('Cache-Control', 'no-store')
+  employeeTestConfirm(@Body() body: EmployeeTestConfirmDto) {
+    return this.attendance.openEmployeeTestAccount(body.wechatCode, body.accountId);
+  }
+
+  @Post('wechat/test-assignments')
+  @Header('Cache-Control', 'no-store')
+  @UseGuards(JwtAuthGuard)
+  testAssignments(@CurrentUserInfo() user: CurrentUser, @Body() body: AssignmentsDto) {
+    return this.attendance.assignments(body.wechatCode, body.workDate, user);
+  }
+
+  @Post('wechat/test-wifi-punch')
+  @UseGuards(JwtAuthGuard)
+  testWifiPunch(@CurrentUserInfo() user: CurrentUser, @Body() body: WifiPunchDto) {
+    return this.attendance.wifiPunch(body.wechatCode, body.assignmentId, body.bssid, body.kind, user);
+  }
+
+  @Post('wechat/test-corrections')
+  @UseGuards(JwtAuthGuard)
+  testCorrection(@CurrentUserInfo() user: CurrentUser, @Body() body: CorrectionDto) {
+    return this.attendance.requestCorrection(
+      body.wechatCode, body.assignmentId, body.kind, body.requestedTime, body.reason, user
+    );
   }
 
   @Post('wechat/task-subscription')

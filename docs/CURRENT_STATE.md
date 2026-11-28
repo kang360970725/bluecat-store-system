@@ -1,6 +1,6 @@
 # Current State
 
-Last updated: 2026-11-27
+Last updated: 2026-11-28
 
 ## Repository baseline
 
@@ -32,6 +32,8 @@ Last updated: 2026-11-27
 - Production build and upload scripts plus Prisma migrations.
 
 ## In progress: employee mini-program attendance
+
+- The Zhonghai International test login adds a super-admin configuration card under mini-program attendance settings and a manual account confirmation sheet in the independent mini-program. It requires migration `20261128160000_employee_test_access` and an explicitly configured operator and target list. Production configuration and device acceptance are pending.
 
 - The task-publishing update restores the Web publish action, enables trial dispatch for active login accounts, adds task categories and supports managing recurring templates. Private MinIO reference photos can accompany tasks. Immediate and recurring dispatch create in-app messages for eligible active employees. The release includes migrations `20261127100000_align_task_publishing` and `20261127110000_task_references_and_wechat`. The in-app inbox works independently of WeChat templates. The WeChat subscription template is left unconfigured for this release.
 - Production deployed release commit `f9858716` on 2026-11-27. All 72 migrations are current, private MinIO preflight passed, the public Web and the new task asset returned 200, the anonymous inbox and image endpoints returned 401, and PM2 was online without unstable restarts. The verified backup is `/opt/bluecat-store-system/.release-backups/task-references-before-84fc1125.ZLSPAu`. The mini-program was rebuilt locally for an experience-version upload.
